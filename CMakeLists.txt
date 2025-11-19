@@ -148,6 +148,13 @@ set(SOURCES
     src/wayland_shell.h
     src/wayland_screencopy.c
     src/wayland_screencopy.h
+    src/wayland_presentation.c
+    src/wayland_presentation.h
+    src/presentation-time-protocol.c
+    src/presentation-time-protocol.h
+    src/wayland_color_management.c
+    src/wayland_color_management.h
+    src/color-management-v1-protocol.h
     src/wayland_linux_dmabuf.c
     src/wayland_linux_dmabuf.h
     src/wayland_idle_inhibit.c

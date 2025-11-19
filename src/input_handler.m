@@ -2,6 +2,7 @@
 #import "wayland_seat.h"
 #include <wayland-server-protocol.h>
 #include <wayland-server.h>
+#include <time.h>
 
 // Key code mapping: macOS key codes to Linux keycodes
 // Reference: /usr/include/linux/input-event-codes.h
@@ -199,7 +200,11 @@ static uint32_t macButtonToWaylandButton(NSEventType eventType, NSEvent *event) 
     double y = locationInView.y; // Use Y directly - view is already flipped
     
     NSEventType eventType = [event type];
-    uint32_t time = (uint32_t)([event timestamp] * 1000); // Convert to milliseconds
+    // Use CLOCK_MONOTONIC for consistent timestamps (prevents timestamp jumps)
+    // Wayland expects monotonic timestamps in milliseconds
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint32_t time = (uint32_t)((ts.tv_sec * 1000) + (ts.tv_nsec / 1000000));
     
     switch (eventType) {
         case NSEventTypeMouseMoved:
@@ -366,7 +371,11 @@ static uint32_t macButtonToWaylandButton(NSEventType eventType, NSEvent *event) 
     if (!_seat) return;
 
     NSEventType eventType = [event type];
-    uint32_t time = (uint32_t)([event timestamp] * 1000);
+    // Use CLOCK_MONOTONIC for consistent timestamps (prevents timestamp jumps)
+    // Wayland expects monotonic timestamps in milliseconds
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint32_t time = (uint32_t)((ts.tv_sec * 1000) + (ts.tv_nsec / 1000000));
     unsigned short macKeyCode = [event keyCode];
     
     // Use charactersIgnoringModifiers to determine the actual key pressed

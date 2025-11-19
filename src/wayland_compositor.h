@@ -19,12 +19,16 @@ typedef void (*wl_surface_render_callback_t)(struct wl_surface_impl *surface);
 // Title update callback type - called when focus changes to update window title
 typedef void (*wl_title_update_callback_t)(struct wl_client *client);
 
+// Frame callback requested callback type - called when a client requests a frame callback
+typedef void (*wl_frame_callback_requested_t)(void);
+
 // Compositor global
 struct wl_compositor_impl {
     struct wl_global *global;
     struct wl_display *display;
     wl_surface_render_callback_t render_callback; // Callback for immediate rendering
     wl_title_update_callback_t update_title_callback; // Callback for updating window title
+    wl_frame_callback_requested_t frame_callback_requested; // Callback when frame callback is requested
 };
 
 // Surface implementation
@@ -50,6 +54,9 @@ struct wl_surface_impl {
     
     // User data (for linking to CALayer)
     void *user_data;
+    
+    // Color management
+    void *color_management; // struct wp_color_management_surface_impl *
 };
 
 // Output implementation - defined in wayland_output.h
@@ -61,7 +68,16 @@ struct wl_compositor_impl *wl_compositor_create(struct wl_display *display);
 void wl_compositor_destroy(struct wl_compositor_impl *compositor);
 void wl_compositor_set_render_callback(struct wl_compositor_impl *compositor, wl_surface_render_callback_t callback);
 void wl_compositor_set_title_update_callback(struct wl_compositor_impl *compositor, wl_title_update_callback_t callback);
+void wl_compositor_set_frame_callback_requested(struct wl_compositor_impl *compositor, wl_frame_callback_requested_t callback);
 void wl_compositor_set_seat(struct wl_seat_impl *seat);
+
+// Thread-safe surface iteration
+typedef void (*wl_surface_iterator_func_t)(struct wl_surface_impl *surface, void *data);
+void wl_compositor_for_each_surface(wl_surface_iterator_func_t iterator, void *data);
+
+// Lock/Unlock surfaces mutex (for external safe access)
+void wl_compositor_lock_surfaces(void);
+void wl_compositor_unlock_surfaces(void);
 
 // Forward declarations - implementations in separate files
 struct wl_output_impl *wl_output_create(struct wl_display *display, int32_t width, int32_t height, const char *name);
@@ -85,7 +101,8 @@ struct wl_surface_impl *wl_get_all_surfaces(void);
 
 // Send frame callbacks to all surfaces with pending callbacks
 // Called at display refresh rate to synchronize with display
-void wl_send_frame_callbacks(void);
+// Returns the number of callbacks sent
+int wl_send_frame_callbacks(void);
 bool wl_has_pending_frame_callbacks(void);
 
 // Clear buffer reference from surfaces (called when buffer is destroyed)

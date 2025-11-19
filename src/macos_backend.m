@@ -120,6 +120,36 @@
 // Static reference to compositor instance for C callback
 static MacOSCompositor *g_compositor_instance = NULL;
 
+// Forward declarations
+static int send_frame_callbacks_timer(void *data);
+static void send_frame_callbacks_timer_idle(void *data);
+static BOOL ensure_frame_callback_timer_on_event_thread(MacOSCompositor *compositor, uint32_t delay_ms, const char *reason);
+static void ensure_frame_callback_timer_idle(void *data);
+
+// C function for frame callback requested callback
+// Called from event thread when a client requests a frame callback
+static void macos_compositor_frame_callback_requested(void) {
+    if (!g_compositor_instance) return;
+    
+    // This runs on the event thread - safe to create timer directly
+    if (g_compositor_instance.display) {
+        struct wl_event_loop *eventLoop = wl_display_get_event_loop(g_compositor_instance.display);
+        BOOL timer_was_missing = (g_compositor_instance.frame_callback_source == NULL);
+        if (ensure_frame_callback_timer_on_event_thread(g_compositor_instance, 16, "frame request")) {
+            // CRITICAL: Always trigger immediate frame callback send when requested
+            // This ensures clients don't wait up to 16ms for the timer to fire
+            // The idle callback will run immediately on the event loop
+            if (eventLoop) {
+                wl_event_loop_add_idle(eventLoop, send_frame_callbacks_timer_idle, (__bridge void *)g_compositor_instance);
+            } else if (timer_was_missing) {
+                log_printf("[COMPOSITOR] ", "macos_compositor_frame_callback_requested: Timer ensured but event loop missing\n");
+            }
+        } else {
+            log_printf("[COMPOSITOR] ", "macos_compositor_frame_callback_requested: Failed to ensure timer\n");
+        }
+    }
+}
+
 // C function to update window title when focus changes
 void macos_compositor_update_title(struct wl_client *client) {
     if (g_compositor_instance) {
@@ -202,6 +232,9 @@ void macos_compositor_detect_full_compositor(struct wl_client *client) {
     });
 }
 
+// Forward declaration
+static void renderSurfaceImmediate(struct wl_surface_impl *surface);
+
 // C wrapper function for render callback
 static void render_surface_callback(struct wl_surface_impl *surface) {
     if (!surface) return;
@@ -220,42 +253,53 @@ static void render_surface_callback(struct wl_surface_impl *surface) {
     if (!client) return;
     
     if (g_compositor_instance && g_compositor_instance.renderingBackend) {
-        // Render on main thread using active backend (Cocoa or Metal)
-        // Note: renderSurface will validate again, but this prevents unnecessary dispatch
-        dispatch_async(dispatch_get_main_queue(), ^{
-            // Check if window needs to be shown and sized for first client
-            if (!g_compositor_instance.windowShown && surface->buffer_resource) {
-                // Get buffer size to size window appropriately
-                // buffer_data structure is defined in wayland_shm.c
-                struct buffer_data {
-                    void *data;
-                    int32_t offset;
-                    int32_t width;
-                    int32_t height;
-                    int32_t stride;
-                    uint32_t format;
-                };
-                struct buffer_data *buf_data = wl_resource_get_user_data(surface->buffer_resource);
-                if (buf_data && buf_data->width > 0 && buf_data->height > 0) {
-                    [g_compositor_instance showAndSizeWindowForFirstClient:buf_data->width height:buf_data->height];
-                }
-            }
-            
-            if ([g_compositor_instance.renderingBackend respondsToSelector:@selector(renderSurface:)]) {
-                [g_compositor_instance.renderingBackend renderSurface:surface];
-            }
-            // Trigger redraw after rendering surface
-            // For Metal backend with continuous rendering, no need to call setNeedsDisplay:
-            if (g_compositor_instance.window && g_compositor_instance.window.contentView) {
-                if (g_compositor_instance.backendType == 1) {
-                    // Metal backend - continuous rendering handles updates automatically
-                    // No need to call setNeedsDisplay: with enableSetNeedsDisplay=NO
-                } else {
-                    // Cocoa backend - needs explicit redraw
-                    [g_compositor_instance.window.contentView setNeedsDisplay:YES];
-                }
-            }
-        });
+        // CRITICAL: Render SYNCHRONOUSLY on main thread for immediate updates
+        // Wayland compositors MUST repaint immediately when clients commit buffers
+        // Async dispatch causes race conditions and delays that break nested compositors
+        if ([NSThread isMainThread]) {
+            renderSurfaceImmediate(surface);
+        } else {
+            dispatch_sync(dispatch_get_main_queue(), ^{
+                renderSurfaceImmediate(surface);
+            });
+        }
+    }
+}
+
+// Helper function to render surface immediately on main thread
+static void renderSurfaceImmediate(struct wl_surface_impl *surface) {
+    if (!g_compositor_instance || !surface) return;
+    
+    // Check if window needs to be shown and sized for first client
+    if (!g_compositor_instance.windowShown && surface->buffer_resource) {
+        // Get buffer size to size window appropriately
+        struct buffer_data {
+            void *data;
+            int32_t offset;
+            int32_t width;
+            int32_t height;
+            int32_t stride;
+            uint32_t format;
+        };
+        struct buffer_data *buf_data = wl_resource_get_user_data(surface->buffer_resource);
+        if (buf_data && buf_data->width > 0 && buf_data->height > 0) {
+            [g_compositor_instance showAndSizeWindowForFirstClient:buf_data->width height:buf_data->height];
+        }
+    }
+    
+    // Render surface immediately
+    if ([g_compositor_instance.renderingBackend respondsToSelector:@selector(renderSurface:)]) {
+        [g_compositor_instance.renderingBackend renderSurface:surface];
+    }
+    
+    // CRITICAL: Trigger IMMEDIATE redraw after rendering surface
+    // This ensures nested compositors (like Weston) see updates immediately
+    // Wayland spec requires compositors to repaint immediately on surface commit
+    if ([g_compositor_instance.renderingBackend respondsToSelector:@selector(setNeedsDisplay)]) {
+        [g_compositor_instance.renderingBackend setNeedsDisplay];
+    } else if (g_compositor_instance.window && g_compositor_instance.window.contentView) {
+        // Fallback for Cocoa backend
+        [g_compositor_instance.window.contentView setNeedsDisplay:YES];
     }
 }
 
@@ -265,7 +309,11 @@ void remove_surface_from_renderer(struct wl_surface_impl *surface) {
         return;
     }
     
-    dispatch_async(dispatch_get_main_queue(), ^{
+    // CRITICAL: Use dispatch_sync to ensure surface is removed from renderer
+    // BEFORE the surface struct is freed by the caller (surface_destroy).
+    // Using dispatch_async causes a race condition where the block runs after
+    // the surface is freed, leading to Use-After-Free crashes.
+    if ([NSThread isMainThread]) {
         // Remove from Cocoa renderer if active
         if (g_compositor_instance.renderer) {
             [g_compositor_instance.renderer removeSurface:surface];
@@ -277,7 +325,21 @@ void remove_surface_from_renderer(struct wl_surface_impl *surface) {
             [g_compositor_instance.renderingBackend respondsToSelector:@selector(removeSurface:)]) {
             [g_compositor_instance.renderingBackend removeSurface:surface];
         }
-    });
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            // Remove from Cocoa renderer if active
+            if (g_compositor_instance.renderer) {
+                [g_compositor_instance.renderer removeSurface:surface];
+            }
+            
+            // Remove from Metal renderer if active
+            if (g_compositor_instance.renderingBackend && 
+                g_compositor_instance.backendType == 1 &&
+                [g_compositor_instance.renderingBackend respondsToSelector:@selector(removeSurface:)]) {
+                [g_compositor_instance.renderingBackend removeSurface:surface];
+            }
+        });
+    }
 }
 
 // C function to check if window should be hidden after client disconnects
@@ -310,7 +372,6 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
         _window = window;
         _eventLoop = wl_display_get_event_loop(display);
         _shouldStopEventThread = NO;
-        _needs_frame_callbacks = NO;
         _frame_callback_source = NULL;
         _pending_resize_width = 0;
         _pending_resize_height = 0;
@@ -444,6 +505,9 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
     
     // Set up title update callback to update window title when focus changes
     wl_compositor_set_title_update_callback(_compositor, macos_compositor_update_title);
+    
+    // Set up frame callback requested callback to ensure timer is running
+    wl_compositor_set_frame_callback_requested(_compositor, macos_compositor_frame_callback_requested);
     
     // Get window size for output
     NSRect frame = [_window.contentView bounds];
@@ -616,6 +680,21 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
         NSLog(@"   ✓ Plasma Shell protocol created");
     }
     
+    // Presentation time protocol (for accurate presentation timing feedback)
+    struct wp_presentation_impl *presentation = wp_presentation_create(_display, _output);
+    if (presentation) {
+        NSLog(@"   ✓ Presentation time protocol created");
+    }
+    
+    // Color management protocol (for color operations and HDR support)
+    _color_manager = wp_color_manager_create(_display, _output);
+    if (_color_manager) {
+        NSLog(@"   ✓ Color management protocol created (HDR: %s)", 
+              _color_manager->hdr_supported ? "yes" : "no");
+    } else {
+        NSLog(@"   ✗ Color management protocol creation failed");
+    }
+    
     // Qt Wayland Extensions (for QtWayland applications)
     struct wl_qt_surface_extension_impl *qt_surface = wl_qt_surface_extension_create(_display);
     if (qt_surface) {
@@ -640,11 +719,32 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
         
         // Set up proper error handling for client connections
         // wl_display_run() handles client connections internally
-        // Errors like "failed to read client connection" are normal when clients disconnect
-        // and are handled gracefully by libwayland-server
+        // NOTE: You may see "failed to read client connection (pid 0)" errors from libwayland-server.
+        // These are NORMAL and EXPECTED when:
+        // - waypipe clients test/check the socket connection (happens during colima-client startup)
+        // - Clients connect then immediately disconnect to verify connectivity
+        // - "pid 0" means PID unavailable (normal for waypipe forwarded connections)
+        // - These are transient connection attempts, not real errors
+        // - libwayland-server handles them gracefully and continues accepting connections
+        // - The actual connection will succeed on retry
+        // This error is printed by libwayland-server to stderr and cannot be suppressed from our code.
+        log_printf("[COMPOSITOR] ", "ℹ️  Note: Transient 'failed to read client connection' errors during client setup are normal and harmless\n");
         
         @try {
-            wl_display_run(compositor.display);
+            // Use manual event loop instead of wl_display_run() to ensure timers fire
+            // wl_display_run() blocks on file descriptors and may not process timers reliably
+            struct wl_event_loop *eventLoop = wl_display_get_event_loop(compositor.display);
+            while (!compositor.shouldStopEventThread) {
+                // Dispatch events with a timeout to allow timers to fire
+                // Use 16ms timeout (matches frame callback timer interval)
+                int ret = wl_event_loop_dispatch(eventLoop, 16);
+                if (ret < 0) {
+                    log_printf("[COMPOSITOR] ", "⚠️ Event loop dispatch failed: %d\n", ret);
+                    break;
+                }
+                // Flush clients after each dispatch
+                wl_display_flush_clients(compositor.display);
+            }
         } @catch (NSException *exception) {
             log_printf("[COMPOSITOR] ", "⚠️ Exception in Wayland event thread: %s\n", 
                        [exception.reason UTF8String]);
@@ -872,22 +972,96 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
     
     // Trigger the idle callback immediately to send configure events
     if (_eventLoop) {
-        // Remove existing callback if any
-        if (_frame_callback_source) {
-            wl_event_source_remove(_frame_callback_source);
-            _frame_callback_source = NULL;
-        }
-        // Add new idle callback to send configure events immediately
-        _needs_frame_callbacks = YES;
-        _frame_callback_source = wl_event_loop_add_idle(_eventLoop, send_frame_callbacks_idle, (__bridge void *)self);
+        // Kick the timer from the event loop thread to send configure + frame callbacks quickly
+        wl_event_loop_add_idle(_eventLoop, ensure_frame_callback_timer_idle, (__bridge void *)self);
     }
 }
 
-// Idle callback to send frame callbacks from Wayland event thread
-static void send_frame_callbacks_idle(void *data) {
+// Idle callback to trigger first frame callback immediately
+static void send_frame_callbacks_timer_idle(void *data) {
+    MacOSCompositor *compositor = (__bridge MacOSCompositor *)data;
+    if (compositor) {
+        log_printf("[COMPOSITOR] ", "send_frame_callbacks_timer_idle: Triggering immediate frame callback\n");
+        fflush(stdout);
+        // Call the timer function directly to send frame callbacks immediately
+        send_frame_callbacks_timer(data);
+    }
+}
+
+// Ensure the frame callback timer exists and is scheduled (must run on event thread)
+static BOOL ensure_frame_callback_timer_on_event_thread(MacOSCompositor *compositor, uint32_t delay_ms, const char *reason) {
+    if (!compositor || !compositor.display) {
+        return NO;
+    }
+
+    struct wl_event_loop *eventLoop = wl_display_get_event_loop(compositor.display);
+    if (!eventLoop) {
+        log_printf("[COMPOSITOR] ", "ensure_frame_callback_timer_on_event_thread: event loop unavailable\n");
+        return NO;
+    }
+
+    if (!compositor.frame_callback_source) {
+        compositor.frame_callback_source = wl_event_loop_add_timer(eventLoop, send_frame_callbacks_timer, (__bridge void *)compositor);
+        if (!compositor.frame_callback_source) {
+            log_printf("[COMPOSITOR] ", "ensure_frame_callback_timer_on_event_thread: Failed to create timer (%s)\n",
+                       reason ? reason : "no reason");
+            return NO;
+        }
+        log_printf("[COMPOSITOR] ", "ensure_frame_callback_timer_on_event_thread: Created timer (%s, delay=%ums)\n",
+                   reason ? reason : "no reason", delay_ms);
+    }
+
+    int ret = wl_event_source_timer_update(compositor.frame_callback_source, delay_ms);
+    if (ret < 0) {
+        int err = errno;
+        log_printf("[COMPOSITOR] ", "ensure_frame_callback_timer_on_event_thread: timer update failed (%s, delay=%ums) - recreating\n",
+                   strerror(err), delay_ms);
+        wl_event_source_remove(compositor.frame_callback_source);
+        compositor.frame_callback_source = NULL;
+
+        compositor.frame_callback_source = wl_event_loop_add_timer(eventLoop, send_frame_callbacks_timer, (__bridge void *)compositor);
+        if (!compositor.frame_callback_source) {
+            log_printf("[COMPOSITOR] ", "ensure_frame_callback_timer_on_event_thread: Failed to recreate timer after error\n");
+            return NO;
+        }
+
+        ret = wl_event_source_timer_update(compositor.frame_callback_source, delay_ms);
+        if (ret < 0) {
+            err = errno;
+            log_printf("[COMPOSITOR] ", "ensure_frame_callback_timer_on_event_thread: Second timer update failed (%s)\n",
+                       strerror(err));
+            wl_event_source_remove(compositor.frame_callback_source);
+            compositor.frame_callback_source = NULL;
+            return NO;
+        }
+
+        log_printf("[COMPOSITOR] ", "ensure_frame_callback_timer_on_event_thread: Timer recreated successfully\n");
+    }
+    return YES;
+}
+
+// Idle helper to (re)arm the timer from threads other than the event thread
+static void ensure_frame_callback_timer_idle(void *data) {
+    MacOSCompositor *compositor = (__bridge MacOSCompositor *)data;
+    if (compositor) {
+        ensure_frame_callback_timer_on_event_thread(compositor, 0, "idle kick");
+    }
+}
+
+// Timer callback to send frame callbacks from Wayland event thread
+// This fires every ~16ms (60Hz) to match display refresh rate
+static int send_frame_callbacks_timer(void *data) {
     MacOSCompositor *compositor = (__bridge MacOSCompositor *)data;
     if (compositor) {
         // This runs on the Wayland event thread - safe to call Wayland server functions
+        
+        // Timer fires every 16ms - log first few calls and then every 60th call
+        static int timer_call_count = 0;
+        timer_call_count++;
+        if (timer_call_count <= 5 || timer_call_count % 60 == 0) {
+            log_printf("[COMPOSITOR] ", "send_frame_callbacks_timer() called (call #%d)\n", timer_call_count);
+            fflush(stdout); // Force flush to ensure log is visible
+        }
         
         // Handle pending resize configure events first
         if (compositor.needs_resize_configure) {
@@ -900,28 +1074,68 @@ static void send_frame_callbacks_idle(void *data) {
         }
         
         // Send frame callbacks
-        wl_send_frame_callbacks();
-        // Clear the source pointer since idle callbacks are automatically removed after firing
-        compositor.frame_callback_source = NULL;
-        compositor.needs_frame_callbacks = NO;
+        int sent_count = wl_send_frame_callbacks();
+        if (sent_count > 0) {
+            log_printf("[COMPOSITOR] ", "send_frame_callbacks_timer: Sent %d frame callback(s)\n", sent_count);
+            fflush(stdout);
+        }
+        
+        // CRITICAL: Flush clients to ensure frame callbacks are sent immediately
+        // This wakes up clients waiting on wl_display_dispatch()
+        wl_display_flush_clients(compositor.display);
+        
+        // CRITICAL: Always keep timer running - clients request new frame callbacks AFTER receiving them
+        // If we stop the timer when there are no pending callbacks, we'll miss the next request
+        // The timer will be removed when the compositor stops or all clients disconnect
+        // Keep firing every 16ms (60Hz) continuously
+        if (!ensure_frame_callback_timer_on_event_thread(compositor, 16, "re-arm")) {
+            log_printf("[COMPOSITOR] ", "send_frame_callbacks_timer: Failed to re-arm timer\n");
+        }
+        return 0;
     }
+    return 0;
 }
 
 - (void)sendFrameCallbacksImmediately {
     // Force immediate frame callback dispatch - used after input events
     // This allows clients to render updates immediately in response to input
-    // NOTE: Must be called from main thread, but the idle callback will run on event thread
+    // NOTE: Must be called from main thread, but the timer callback will run on event thread
     if (_eventLoop && wl_has_pending_frame_callbacks()) {
-        // Remove any existing idle callback and schedule a new one
-        // The idle callback will be processed by the event thread on its next iteration
-        if (_frame_callback_source) {
-            wl_event_source_remove(_frame_callback_source);
-            _frame_callback_source = NULL;
+        // Ensure timer is running - use idle callback so logic executes on event thread
+        wl_event_loop_add_idle(_eventLoop, ensure_frame_callback_timer_idle, (__bridge void *)self);
+    }
+}
+
+// Render context for thread-safe iteration
+struct RenderContext {
+    __unsafe_unretained MacOSCompositor *compositor;
+    BOOL surfacesWereRendered;
+};
+
+// Iterator function for rendering surfaces
+static void render_surface_iterator(struct wl_surface_impl *surface, void *data) {
+    struct RenderContext *ctx = (struct RenderContext *)data;
+    MacOSCompositor *self = ctx->compositor;
+    
+    // Only render if surface is still valid and has committed buffer
+    if (surface->committed && surface->buffer_resource && surface->resource) {
+        // Verify resource is still valid before rendering
+        struct wl_client *client = wl_resource_get_client(surface->resource);
+        if (client) {
+            // Use active rendering backend (Cocoa or Metal)
+            // Render regardless of window focus state - clients need updates
+            if (self.renderingBackend) {
+                if ([self.renderingBackend respondsToSelector:@selector(renderSurface:)]) {
+                    [self.renderingBackend renderSurface:surface];
+                    ctx->surfacesWereRendered = YES;
+                } else if (self.renderer) {
+                    // Fallback to Cocoa renderer
+                    [self.renderer renderSurface:surface];
+                    ctx->surfacesWereRendered = YES;
+                }
+            }
         }
-        // Schedule idle callback - event thread will process it very quickly
-        // Do NOT call wl_event_loop_dispatch here - event loop runs in separate thread!
-        _needs_frame_callbacks = YES;
-        _frame_callback_source = wl_event_loop_add_idle(_eventLoop, send_frame_callbacks_idle, (__bridge void *)self);
+        surface->committed = false;
     }
 }
 
@@ -932,60 +1146,43 @@ static void send_frame_callbacks_idle(void *data) {
     // NOTE: This continues to run even when the window loses focus, ensuring
     // Wayland clients continue to receive frame callbacks and can render updates
 
-    // Schedule frame callback sending if there are pending frame callbacks
-    // This ensures nested compositors (like Weston) receive frame callbacks continuously
-    // Frame callbacks are critical for nested compositors to know when to render
-    if (_eventLoop && wl_has_pending_frame_callbacks()) {
-        // Always schedule frame callbacks if pending, even if one is already scheduled
-        // This ensures frame callbacks are sent at display refresh rate for smooth updates
-        if (!_frame_callback_source) {
-            _needs_frame_callbacks = YES;
-            _frame_callback_source = wl_event_loop_add_idle(_eventLoop, send_frame_callbacks_idle, (__bridge void *)self);
-        }
-    }
+    // Note: Frame callback timer is now created automatically when clients request frame callbacks
+    // via the macos_compositor_frame_callback_requested callback. This ensures the timer is
+    // created on the event thread and starts firing immediately.
+    // We don't need to check here anymore - the timer will be created when needed.
     
     // Check for any committed surfaces and render them
     // Note: The event thread also triggers rendering, but this ensures
     // we catch any surfaces that might have been committed between thread dispatches
     // Continue rendering even when window isn't focused - clients need frame callbacks
-    struct wl_surface_impl *surface = wl_get_all_surfaces();
-    while (surface) {
-        // Store next pointer before potentially accessing surface (may be freed)
-        struct wl_surface_impl *next = surface->next;
-        
-        // Only render if surface is still valid and has committed buffer
-        if (surface->committed && surface->buffer_resource && surface->resource) {
-            // Verify resource is still valid before rendering
-            struct wl_client *client = wl_resource_get_client(surface->resource);
-            if (client) {
-                // Use active rendering backend (Cocoa or Metal)
-                // Render regardless of window focus state - clients need updates
-                if (self->_renderingBackend) {
-                    if ([self->_renderingBackend respondsToSelector:@selector(renderSurface:)]) {
-                        [self->_renderingBackend renderSurface:surface];
-                    } else if (self->_renderer) {
-                        // Fallback to Cocoa renderer
-                        [self->_renderer renderSurface:surface];
-                    }
-                }
-            }
-            surface->committed = false;
-        }
-        surface = next;
-    }
     
-    // Trigger view redraw at display refresh rate for smooth updates
-    // For Metal backend with continuous rendering enabled, the view draws automatically
-    // but we ensure frame callbacks are sent so nested compositors can render
-    if (_window && _window.contentView) {
+    struct RenderContext ctx;
+    ctx.compositor = self;
+    ctx.surfacesWereRendered = NO;
+    
+    // Use thread-safe iteration to render surfaces
+    // This locks the surfaces mutex to prevent race conditions with the event thread
+    wl_compositor_for_each_surface(render_surface_iterator, &ctx);
+    
+    BOOL surfacesWereRendered = ctx.surfacesWereRendered;
+    
+    // Trigger view redraw if surfaces were rendered
+    // CRITICAL: Even with Metal backend continuous rendering, we must trigger redraw
+    // when surfaces are updated to ensure immediate display of nested compositor updates
+    if (surfacesWereRendered && _window && _window.contentView) {
         if (_backendType == 1) {
-            // Metal backend - continuous rendering is enabled via enableSetNeedsDisplay=NO
-            // The Metal view will automatically call drawInMTKView: at display refresh rate
-            // No need to call setNeedsDisplay: - it's handled by MTKView's internal display link
+            // Metal backend - trigger redraw using renderer's setNeedsDisplay method
+            // This ensures nested compositors (like Weston) see updates immediately
+            if ([self->_renderingBackend respondsToSelector:@selector(setNeedsDisplay)]) {
+                [self->_renderingBackend setNeedsDisplay];
+            }
         } else {
             // Cocoa backend - needs explicit redraw
             [_window.contentView setNeedsDisplay:YES];
         }
+    } else if (_window && _window.contentView && _backendType != 1) {
+        // Cocoa backend always needs redraw for frame callbacks
+        [_window.contentView setNeedsDisplay:YES];
     }
 }
 
@@ -1025,9 +1222,11 @@ static void send_frame_callbacks_idle(void *data) {
         _displayLink = NULL;
     }
     
-    // Frame callback idle source will be automatically cleaned up when event loop stops
-    // No need to manually remove it
-    _frame_callback_source = NULL;
+    // Stop frame callback timer
+    if (_frame_callback_source) {
+        wl_event_source_remove(_frame_callback_source);
+        _frame_callback_source = NULL;
+    }
     
     // Clean up Wayland resources
     if (_xdg_wm_base) {

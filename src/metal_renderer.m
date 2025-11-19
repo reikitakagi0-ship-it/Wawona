@@ -460,9 +460,47 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
 }
 
 - (void)setNeedsDisplay {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self.metalView setNeedsDisplay:YES];
-    });
+    // CRITICAL: Force immediate synchronous redraw for nested compositors
+    // This must be synchronous to ensure updates appear immediately when clients commit buffers
+    // Wayland compositors MUST repaint immediately on surface commit - no async delays!
+    if (!self.metalView) return;
+    
+    // Check if we're on main thread - if not, dispatch sync to main thread
+    if ([NSThread isMainThread]) {
+        [self setNeedsDisplaySync];
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            [self setNeedsDisplaySync];
+        });
+    }
+}
+
+- (void)setNeedsDisplaySync {
+    // This runs on main thread - force immediate redraw
+    // CRITICAL: For nested compositors, we MUST redraw immediately when textures update
+    if (!self.metalView) return;
+    
+    BOOL wasEnabled = self.metalView.enableSetNeedsDisplay;
+    if (!wasEnabled) {
+        // Temporarily enable to force immediate frame
+        self.metalView.enableSetNeedsDisplay = YES;
+    }
+    
+    // Trigger redraw immediately - this will cause MTKView to call drawInMTKView:
+    [self.metalView setNeedsDisplay:YES];
+    
+    // CRITICAL: Force immediate rendering by directly calling the delegate method
+    // This bypasses the display link and renders immediately for nested compositor updates
+    // Wayland compositors MUST repaint synchronously when clients commit buffers
+    if (self.metalView.delegate == self) {
+        // We are the delegate - directly call drawInMTKView to force immediate render
+        [self drawInMTKView:self.metalView];
+    }
+    
+    // Restore continuous rendering mode after triggering redraw
+    if (!wasEnabled) {
+        self.metalView.enableSetNeedsDisplay = NO;
+    }
 }
 
 // MTKViewDelegate
@@ -571,14 +609,6 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
         }
         
         // Draw all surfaces (using the snapshot we created earlier)
-        NSInteger surfaceCount = surfaces.count;
-        // Reduced logging - only log first few draws
-        static int draw_count = 0;
-        if (draw_count < 3 && surfaceCount > 0) {
-            NSLog(@"[METAL] Drawing %ld surfaces", (long)surfaceCount);
-            draw_count++;
-        }
-        
         for (MetalSurface *metalSurface in surfaces) {
             // Validate surface is still valid
             if (!metalSurface || !metalSurface.texture) {
@@ -590,14 +620,6 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
             // MTKView automatically handles Retina scaling for drawableSize, but frame/bounds are in points
             NSRect frame = metalSurface.frame;
             CGSize viewSize = view.frame.size;  // Use frame.size (points) for coordinate calculations
-            
-            if (draw_count < 3) {
-                NSLog(@"[METAL] Rendering surface at (%.0f, %.0f) size %.0fx%.0f (view frame: %.0fx%.0f, bounds: %.0fx%.0f, drawable: %.0fx%.0f)",
-                      frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
-                      view.frame.size.width, view.frame.size.height,
-                      view.bounds.size.width, view.bounds.size.height,
-                      view.drawableSize.width, view.drawableSize.height);
-            }
             
             // Use full-screen viewport (Metal uses normalized device coordinates)
             // Metal viewport: bottom-left origin, but we'll use full screen and transform vertices
@@ -671,10 +693,6 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
                 [renderEncoder drawPrimitives:MTLPrimitiveTypeTriangleStrip
                                   vertexStart:0
                                   vertexCount:4];
-            } else {
-                if (draw_count < 3) {
-                    NSLog(@"[METAL] Failed to create vertex buffer");
-                }
             }
         }
         

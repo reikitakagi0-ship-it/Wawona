@@ -102,8 +102,7 @@ jobs:
           
       - name: Build test client
         run: |
-          cd tests
-          make -f Makefile.test_client macos_wlclient_test || true
+          make -f Makefile.test_client macos_wlclient_color_test || true
           
       - name: Check protocol implementations
         run: |
@@ -118,6 +117,7 @@ jobs:
             "xdg_wm_base"
             "zwp_linux_dmabuf_v1"
             "zwp_screencopy_manager_v1"
+            "wp_color_manager_v1"
           )
           for proto in "${PROTOCOLS[@]}"; do
             if grep -r "wl_global_create.*$proto" src/ >/dev/null 2>&1; then
@@ -127,4 +127,70 @@ jobs:
               exit 1
             fi
           done
+          
+      - name: Test Color Operations Protocol Compliance
+        run: |
+          echo "Testing Color Operations Protocol Compliance..."
+          mkdir -p /tmp/wayland-runtime
+          chmod 0700 /tmp/wayland-runtime
+          export XDG_RUNTIME_DIR=/tmp/wayland-runtime
+          export WAYLAND_DISPLAY=wayland-0
+          
+          # Build test client if not already built
+          if [ ! -f macos_wlclient_color_test ]; then
+            make -f Makefile.test_client macos_wlclient_color_test || exit 1
+          fi
+          
+          # Start compositor in background
+          timeout 15s build/Wawona > /tmp/compositor.log 2>&1 &
+          COMPOSITOR_PID=$!
+          sleep 3
+          
+          # Check if compositor is running
+          if ! kill -0 $COMPOSITOR_PID 2>/dev/null; then
+            echo "❌ Compositor failed to start"
+            cat /tmp/compositor.log
+            exit 1
+          fi
+          
+          # Run test client and capture output
+          timeout 8s ./macos_wlclient_color_test > /tmp/client.log 2>&1 || true
+          
+          # Check if color operations protocol is advertised
+          if grep -q "Color Operations Support: yes" /tmp/client.log; then
+            echo "✅ Color Operations Protocol: Supported"
+          else
+            echo "❌ Color Operations Protocol: NOT SUPPORTED"
+            echo "Client output:"
+            cat /tmp/client.log | head -50
+            echo ""
+            echo "Compositor output:"
+            cat /tmp/compositor.log | tail -20
+            exit 1
+          fi
+          
+          # Check for required features
+          if grep -q "ICC Profile Support: yes" /tmp/client.log; then
+            echo "✅ ICC Profile Support: Present"
+          else
+            echo "⚠️ ICC Profile Support: Not advertised"
+          fi
+          
+          # Check for HDR support (may not be available on CI)
+          if grep -q "HDR Support: yes" /tmp/client.log; then
+            echo "✅ HDR Support: Present"
+          else
+            echo "⚠️ HDR Support: Not advertised (may be expected on non-HDR displays)"
+          fi
+          
+          # Verify protocol summary was printed
+          if grep -q "Supported Features:" /tmp/client.log && grep -q "Supported Transfer Functions:" /tmp/client.log; then
+            echo "✅ Protocol summary printed correctly"
+          else
+            echo "⚠️ Protocol summary may be incomplete"
+          fi
+          
+          # Cleanup
+          kill $COMPOSITOR_PID 2>/dev/null || true
+          wait $COMPOSITOR_PID 2>/dev/null || true
 

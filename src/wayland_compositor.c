@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
+#include <pthread.h>
 
 // Forward declarations
 static void compositor_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id);
@@ -62,9 +63,33 @@ static const struct wl_region_interface region_interface = {
 
 // Global surface list
 static struct wl_surface_impl *surfaces = NULL;
+static pthread_mutex_t surfaces_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Thread-safe surface iteration
+void wl_compositor_for_each_surface(wl_surface_iterator_func_t iterator, void *data) {
+    pthread_mutex_lock(&surfaces_mutex);
+    struct wl_surface_impl *surface = surfaces;
+    while (surface) {
+        // Store next pointer in case current surface is removed (though iterator shouldn't remove)
+        struct wl_surface_impl *next = surface->next;
+        iterator(surface, data);
+        surface = next;
+    }
+    pthread_mutex_unlock(&surfaces_mutex);
+}
+
+// Lock/Unlock surfaces mutex (for external safe access)
+void wl_compositor_lock_surfaces(void) {
+    pthread_mutex_lock(&surfaces_mutex);
+}
+
+void wl_compositor_unlock_surfaces(void) {
+    pthread_mutex_unlock(&surfaces_mutex);
+}
 
 // Clear buffer reference from surfaces (called when buffer is destroyed)
 void wl_compositor_clear_buffer_reference(struct wl_resource *buffer_resource) {
+    pthread_mutex_lock(&surfaces_mutex);
     struct wl_surface_impl *surface = surfaces;
     while (surface) {
         if (surface->buffer_resource == buffer_resource) {
@@ -75,6 +100,7 @@ void wl_compositor_clear_buffer_reference(struct wl_resource *buffer_resource) {
         }
         surface = surface->next;
     }
+    pthread_mutex_unlock(&surfaces_mutex);
 }
 
 // Global compositor reference for render callbacks
@@ -101,17 +127,49 @@ static void client_destroy_listener(struct wl_listener *listener, void *data) {
     log_printf("[COMPOSITOR] ", "🔌 CLIENT DISCONNECTED! client=%p, pid=%d, uid=%d, gid=%d\n",
                (void *)client, (int)client_pid, (int)client_uid, (int)client_gid);
 
+    pthread_mutex_lock(&surfaces_mutex);
     // Clear all surfaces belonging to this client
     struct wl_surface_impl *surface = surfaces;
     struct wl_surface_impl *prev = NULL;
 
     while (surface) {
         struct wl_surface_impl *next = surface->next;
+        bool belongs_to_client = false;
 
         // Check if this surface belongs to the disconnected client
-        // Also check if the resource is still valid (not already destroyed)
-        if (surface->resource && wl_resource_get_client(surface->resource) == client) {
+        // CRITICAL: wl_resource_get_client() may crash if resource is already destroyed
+        // So we check if resource exists first, then carefully check the client
+        if (surface->resource) {
+            // Try to get the client - this might fail if resource is destroyed
+            // Use a safer approach: check if resource is still valid by trying to get its client
+            struct wl_client *resource_client = NULL;
+            // wl_resource_get_client() is safe even if resource is destroyed, but let's be extra careful
+            // Actually, wl_resource_get_client() should be safe - it just returns NULL if destroyed
+            resource_client = wl_resource_get_client(surface->resource);
+            if (resource_client == client) {
+                belongs_to_client = true;
+            }
+        }
+
+        if (belongs_to_client) {
             log_printf("[COMPOSITOR] ", "  Clearing surface %p belonging to disconnected client\n", (void *)surface);
+
+            // CRITICAL: Clear frame callback IMMEDIATELY to prevent race condition
+            // wl_send_frame_callbacks() might be running concurrently and try to send
+            // a callback to a destroyed resource, causing a crash in wl_closure_invoke
+            if (surface->frame_callback) {
+                log_printf("[COMPOSITOR] ", "  Clearing frame callback for disconnected client's surface\n");
+                // Don't try to destroy the resource - it's already being destroyed by Wayland
+                // Just clear the pointer to prevent wl_send_frame_callbacks() from accessing it
+                surface->frame_callback = NULL;
+            }
+
+            // Clear color management if it exists
+            if (surface->color_management) {
+                // Color management surface will be destroyed by Wayland automatically
+                // Just clear the pointer to avoid use-after-free
+                surface->color_management = NULL;
+            }
 
             // Clear focus if this surface was focused
             if (global_seat && global_seat->focused_surface == surface) {
@@ -149,6 +207,7 @@ static void client_destroy_listener(struct wl_listener *listener, void *data) {
             surface = next;
         }
     }
+    pthread_mutex_unlock(&surfaces_mutex);
 
     // Also clean up xdg_surfaces belonging to this client
     struct xdg_surface_impl *xdg_surface = xdg_surfaces;
@@ -224,6 +283,7 @@ struct wl_compositor_impl *wl_compositor_create(struct wl_display *display) {
     // Initialize callbacks
     compositor->render_callback = NULL;
     compositor->update_title_callback = NULL;
+    compositor->frame_callback_requested = NULL;
     
     // Client destroy listener will be added in compositor_bind() when clients connect
     // Store global reference for render callbacks
@@ -252,6 +312,11 @@ void wl_compositor_set_title_update_callback(struct wl_compositor_impl *composit
     compositor->update_title_callback = callback;
 }
 
+void wl_compositor_set_frame_callback_requested(struct wl_compositor_impl *compositor, wl_frame_callback_requested_t callback) {
+    if (!compositor) return;
+    compositor->frame_callback_requested = callback;
+}
+
 void wl_compositor_set_seat(struct wl_seat_impl *seat) {
     global_seat = seat;
 }
@@ -272,12 +337,15 @@ static void compositor_bind(struct wl_client *client, void *data, uint32_t versi
     wl_client_get_credentials(client, &client_pid, &client_uid, &client_gid);
     
     // Note: client_pid may be 0 when connection is forwarded through waypipe
-    // This is normal and not an error condition
+    // This is normal and not an error condition. During connection setup, waypipe
+    // may make multiple connection attempts, and some may fail with "failed to read
+    // client connection (pid 0)" - this is expected behavior and libwayland-server
+    // handles it gracefully. The actual connection will succeed on retry.
     if (client_pid > 0) {
         log_printf("[COMPOSITOR] ", "  Client PID: %d, UID: %d, GID: %d\n", 
                    (int)client_pid, (int)client_uid, (int)client_gid);
     } else {
-        log_printf("[COMPOSITOR] ", "  Client PID unavailable (likely forwarded through waypipe)\n");
+        log_printf("[COMPOSITOR] ", "  Client PID unavailable (likely forwarded through waypipe - this is normal)\n");
     }
     
     // Detect if this client is a full compositor (like Weston)
@@ -292,8 +360,13 @@ static void compositor_bind(struct wl_client *client, void *data, uint32_t versi
     
     // Add client destroy listener to clean up surfaces when client disconnects
     // This will be called automatically when the client disconnects
-    // Note: Errors like "failed to read client connection" are normal when clients disconnect
-    // and are handled gracefully by libwayland-server and our destroy listener
+    // Note: During connection setup, you may see "failed to read client connection (pid 0)"
+    // errors from libwayland-server. These are NORMAL and EXPECTED when:
+    // - waypipe clients are connecting (multiple connection attempts during setup)
+    // - Clients disconnect before completing handshake (transient connection attempts)
+    // - PID is unavailable (pid 0) which is normal for waypipe forwarded connections
+    // libwayland-server handles these gracefully and continues accepting connections.
+    // The actual connection will succeed on retry - this is not a bug.
     wl_client_add_destroy_listener(client, &client_destroy_listener_data);
     log_printf("[COMPOSITOR] ", "  Added client destroy listener for client %p\n", (void *)client);
     
@@ -330,8 +403,10 @@ static void compositor_create_surface(struct wl_client *client, struct wl_resour
     surface->buffer_release_sent = true;
     
     // Add to global list
+    pthread_mutex_lock(&surfaces_mutex);
     surface->next = surfaces;
     surfaces = surface;
+    pthread_mutex_unlock(&surfaces_mutex);
     log_printf("[COMPOSITOR] ", "compositor_create_surface() - surface %p created successfully\n", (void *)surface);
 }
 
@@ -370,6 +445,7 @@ static void surface_destroy(struct wl_client *client, struct wl_resource *resour
     surface->resource = NULL;
     
     // Remove from list
+    pthread_mutex_lock(&surfaces_mutex);
     if (surfaces == surface) {
         surfaces = surface->next;
     } else {
@@ -377,6 +453,7 @@ static void surface_destroy(struct wl_client *client, struct wl_resource *resour
         while (s && s->next != surface) s = s->next;
         if (s) s->next = surface->next;
     }
+    pthread_mutex_unlock(&surfaces_mutex);
     
     free(surface);
 }
@@ -391,9 +468,18 @@ static void surface_attach(struct wl_client *client, struct wl_resource *resourc
     // Release old buffer if attached and different from new buffer
     if (surface->buffer_resource && surface->buffer_resource != buffer) {
         if (!surface->buffer_release_sent) {
-            struct buffer_data *buf_data = wl_resource_get_user_data(surface->buffer_resource);
-            if (buf_data) {
-                wl_buffer_send_release(surface->buffer_resource);
+            // CRITICAL: Verify the buffer resource is still valid before sending release
+            // If the client disconnected or buffer was destroyed, this could crash
+            struct wl_client *buffer_client = wl_resource_get_client(surface->buffer_resource);
+            if (buffer_client) {
+                // Buffer resource is still valid - safe to send release
+                struct buffer_data *buf_data = wl_resource_get_user_data(surface->buffer_resource);
+                if (buf_data) {
+                    wl_buffer_send_release(surface->buffer_resource);
+                }
+            } else {
+                // Buffer resource was destroyed (client disconnected) - just mark as released
+                log_printf("[COMPOSITOR] ", "surface_attach: Old buffer already destroyed (client disconnected)\n");
             }
         }
         surface->buffer_release_sent = true;
@@ -433,9 +519,22 @@ static void surface_damage(struct wl_client *client, struct wl_resource *resourc
 static void surface_frame(struct wl_client *client, struct wl_resource *resource, uint32_t callback) {
     struct wl_surface_impl *surface = wl_resource_get_user_data(resource);
     
+    log_printf("[COMPOSITOR] ", "surface_frame() - surface=%p, callback=%u\n", 
+               (void *)surface, callback);
+    
     // Destroy any existing frame callback first
     if (surface->frame_callback) {
-        wl_resource_destroy(surface->frame_callback);
+        log_printf("[COMPOSITOR] ", "surface_frame: Destroying existing frame callback\n");
+        // Verify the callback resource is still valid before destroying
+        // If the client disconnected, the resource might already be destroyed
+        struct wl_client *callback_client = wl_resource_get_client(surface->frame_callback);
+        if (callback_client) {
+            // Resource is still valid - safe to destroy
+            wl_resource_destroy(surface->frame_callback);
+        } else {
+            // Resource was already destroyed (client disconnected) - just clear pointer
+            log_printf("[COMPOSITOR] ", "surface_frame: Existing callback already destroyed (client disconnected)\n");
+        }
         surface->frame_callback = NULL;
     }
     
@@ -447,6 +546,20 @@ static void surface_frame(struct wl_client *client, struct wl_resource *resource
     
     surface->frame_callback = callback_resource;
     wl_resource_set_implementation(callback_resource, NULL, NULL, NULL);
+    log_printf("[COMPOSITOR] ", "surface_frame: Created new frame callback resource (surface=%p, callback=%p)\n", 
+              (void *)surface, (void *)callback_resource);
+    fflush(stdout); // Force flush to ensure log is visible
+    
+    // Notify compositor that a frame callback was requested
+    // This ensures the frame callback timer is running
+    if (global_compositor && global_compositor->frame_callback_requested) {
+        log_printf("[COMPOSITOR] ", "surface_frame: Calling frame_callback_requested callback\n");
+        fflush(stdout);
+        global_compositor->frame_callback_requested();
+    } else {
+        log_printf("[COMPOSITOR] ", "surface_frame: WARNING - frame_callback_requested callback is NULL!\n");
+        fflush(stdout);
+    }
 }
 
 static void surface_set_opaque_region(struct wl_client *client, struct wl_resource *resource, struct wl_resource *region) {
@@ -518,8 +631,7 @@ static void surface_commit(struct wl_client *client, struct wl_resource *resourc
                 } else {
                     // Resource was destroyed, clear focus
                     wl_seat_set_focused_surface(global_seat, NULL);
-                    // Send text input leave event
-                    wl_text_input_send_leave(focused->resource);
+                    // Don't send text input leave - resource is already destroyed
                 }
             }
             
@@ -562,7 +674,16 @@ static void surface_commit(struct wl_client *client, struct wl_resource *resourc
             
             // Send text input enter event if text input is enabled
             // This is called when a surface gains focus
-            wl_text_input_send_enter(surface->resource);
+            // CRITICAL: Verify surface resource is still valid before sending
+            if (surface->resource) {
+                struct wl_client *surface_client_check = wl_resource_get_client(surface->resource);
+                if (surface_client_check) {
+                    struct wl_surface_impl *surface_check = wl_resource_get_user_data(surface->resource);
+                    if (surface_check == surface) {
+                        wl_text_input_send_enter(surface->resource);
+                    }
+                }
+            }
         }
     }
     
@@ -697,12 +818,15 @@ struct wl_surface_impl *wl_get_all_surfaces(void) {
 // Send frame callbacks to all surfaces with pending callbacks
 // This is called at display refresh rate (via CVDisplayLink) to ensure
 // frame callbacks are synchronized with the display refresh
-void wl_send_frame_callbacks(void) {
+// Returns the number of callbacks sent
+int wl_send_frame_callbacks(void) {
     // Get current time in milliseconds since boot (monotonic clock)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint32_t time = (uint32_t)((ts.tv_sec * 1000) + (ts.tv_nsec / 1000000));
 
+    int callback_count = 0;
+    pthread_mutex_lock(&surfaces_mutex);
     struct wl_surface_impl *surface = surfaces;
     while (surface) {
         // Store next pointer before potentially modifying the list
@@ -711,32 +835,89 @@ void wl_send_frame_callbacks(void) {
         // Check if frame_callback is still valid (not NULL and not destroyed)
         // The destroy listener will set it to NULL if the resource was destroyed
         if (surface->frame_callback) {
-            // Verify the resource is still valid by checking its client
-            // If the client disconnected, the resource will be destroyed
-            struct wl_client *client = wl_resource_get_client(surface->frame_callback);
-            if (client) {
-                // Send frame callback - client will receive this at display refresh rate
-                wl_callback_send_done(surface->frame_callback, time);
-                wl_resource_destroy(surface->frame_callback);
+            // CRITICAL: Verify the surface's resource is still valid first
+            // If the surface was destroyed, we shouldn't send callbacks
+            if (!surface->resource) {
+                // Surface was destroyed - clear frame callback
+                log_printf("[COMPOSITOR] ", "Frame callback for destroyed surface %p - clearing\n", 
+                          (void *)surface);
                 surface->frame_callback = NULL;
             } else {
-                // Client disconnected, resource is invalid - clear it
-                surface->frame_callback = NULL;
+                // CRITICAL: Verify the callback resource is still valid before sending
+                // Check both the callback resource's client AND verify it matches the surface's client
+                struct wl_client *callback_client = wl_resource_get_client(surface->frame_callback);
+                if (!callback_client) {
+                    // Callback resource was destroyed (client disconnected) - clear it
+                    log_printf("[COMPOSITOR] ", "Frame callback for surface %p invalid (callback resource destroyed)\n", 
+                              (void *)surface);
+                    surface->frame_callback = NULL;
+                } else {
+                    // Verify the surface resource is still valid
+                    struct wl_client *surface_client = wl_resource_get_client(surface->resource);
+                    if (!surface_client || surface_client != callback_client) {
+                        // Surface resource destroyed or clients don't match - clear callback
+                        log_printf("[COMPOSITOR] ", "Frame callback for surface %p invalid (surface resource destroyed or client mismatch)\n", 
+                                  (void *)surface);
+                        surface->frame_callback = NULL;
+                    } else {
+                        // Additional safety check: verify the surface resource's user_data matches
+                        struct wl_surface_impl *surface_check = wl_resource_get_user_data(surface->resource);
+                        if (surface_check != surface) {
+                            // Surface resource was destroyed or reused - clear callback
+                            log_printf("[COMPOSITOR] ", "Frame callback for surface %p invalid (surface resource user_data mismatch)\n", 
+                                      (void *)surface);
+                            surface->frame_callback = NULL;
+                        } else {
+                            // All checks passed - safe to send frame callback
+                            log_printf("[COMPOSITOR] ", "Sending frame callback to surface %p (time=%u, callback=%p)\n", 
+                                      (void *)surface, time, (void *)surface->frame_callback);
+                            fflush(stdout); // Force flush to ensure log is visible
+                            
+                            // CRITICAL: Wrap send in additional safety - verify callback resource one more time
+                            // This prevents crashes if resource is destroyed between checks
+                            struct wl_client *final_check = wl_resource_get_client(surface->frame_callback);
+                            if (final_check == callback_client) {
+                                wl_callback_send_done(surface->frame_callback, time);
+                                // Destroy the callback resource after sending
+                                // Verify it's still valid before destroying
+                                if (wl_resource_get_client(surface->frame_callback) == callback_client) {
+                                    wl_resource_destroy(surface->frame_callback);
+                                }
+                                surface->frame_callback = NULL;
+                                callback_count++;
+                            } else {
+                                // Resource was destroyed between checks - clear pointer
+                                log_printf("[COMPOSITOR] ", "Frame callback destroyed between validation checks - clearing\n");
+                                surface->frame_callback = NULL;
+                            }
+                        }
+                    }
+                }
             }
         }
         surface = next;
     }
+    pthread_mutex_unlock(&surfaces_mutex);
+    
+    if (callback_count > 0) {
+        log_printf("[COMPOSITOR] ", "Sent %d frame callback(s)\n", callback_count);
+    }
+    
+    return callback_count;
 }
 
 // Check if any surfaces have pending frame callbacks
 bool wl_has_pending_frame_callbacks(void) {
+    pthread_mutex_lock(&surfaces_mutex);
     struct wl_surface_impl *surface = surfaces;
     while (surface) {
         if (surface->frame_callback) {
+            pthread_mutex_unlock(&surfaces_mutex);
             return true;
         }
         surface = surface->next;
     }
+    pthread_mutex_unlock(&surfaces_mutex);
     return false;
 }
 

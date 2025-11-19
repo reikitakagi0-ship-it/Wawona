@@ -7,6 +7,8 @@
 #include "wayland_shm.h"
 #include "wayland_subcompositor.h"
 #include "wayland_data_device_manager.h"
+#include "wayland_presentation.h"
+#include "wayland_color_management.h"
 #include "surface_renderer.h"
 #include "input_handler.h"
 #include "metal_renderer.h"
@@ -33,13 +35,13 @@
 @property (nonatomic, assign) struct wl_subcompositor_impl *subcompositor;
 @property (nonatomic, assign) struct wl_data_device_manager_impl *data_device_manager;
 @property (nonatomic, assign) struct xdg_wm_base_impl *xdg_wm_base;
+@property (nonatomic, assign) struct wp_color_manager_impl *color_manager;
 
 // Event loop integration
 @property (nonatomic, assign) CVDisplayLinkRef displayLink;
 @property (nonatomic, strong) NSThread *eventThread;
 @property (nonatomic, assign) BOOL shouldStopEventThread;
 @property (nonatomic, assign) struct wl_event_source *frame_callback_source;
-@property (nonatomic, assign) volatile BOOL needs_frame_callbacks;
 @property (nonatomic, assign) int32_t pending_resize_width;
 @property (nonatomic, assign) int32_t pending_resize_height;
 @property (nonatomic, assign) volatile BOOL needs_resize_configure;

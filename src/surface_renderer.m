@@ -396,23 +396,15 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
     }
     
     // Draw all surfaces
-    NSInteger surfaceCount = [self.surfaceImages count];
-    if (surfaceCount > 0) {
-        NSLog(@"[RENDER] Drawing %ld surfaces", (long)surfaceCount);
-    }
-    
     for (SurfaceImage *surfaceImage in [self.surfaceImages allValues]) {
         if (!surfaceImage.image || !surfaceImage.surface) {
-            NSLog(@"[RENDER] Skipping surface - image=%p, surface=%p", (void *)surfaceImage.image, (void *)surfaceImage.surface);
             continue;
         }
         
         NSRect frame = surfaceImage.frame;
-        NSLog(@"[RENDER] Drawing surface at (%.0f, %.0f) size %.0fx%.0f", frame.origin.x, frame.origin.y, frame.size.width, frame.size.height);
         
         // Only draw if frame intersects dirty rect
         if (!NSIntersectsRect(frame, dirtyRect)) {
-            NSLog(@"[RENDER] Surface outside dirty rect");
             continue;
         }
         

@@ -39,6 +39,7 @@ jobs:
             "org_kde_plasma_shell:wayland_plasma_shell.c"
             "qt_surface_extension:wayland_qt_extensions.c"
             "qt_windowmanager:wayland_qt_extensions.c"
+            "wp_color_manager_v1:wayland_color_management.c"
           )
           
           for entry in "${PROTOCOLS[@]}"; do

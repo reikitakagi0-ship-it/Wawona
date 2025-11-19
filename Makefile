@@ -20,7 +20,7 @@ WAYLAND_BUILD_DIR := $(WAYLAND_DIR)/build
 
 # Binaries
 COMPOSITOR_BIN := $(BUILD_DIR)/Wawona
-TEST_CLIENT_BIN := macos_wlclient_test
+TEST_CLIENT_BIN := macos_wlclient_color_test
 
 # Environment
 XDG_RUNTIME_DIR ?= $(shell echo $${TMPDIR:-/tmp}/wayland-runtime)
@@ -191,16 +191,16 @@ build-compositor:
 # Build client
 build-client:
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
-	@echo "$(BLUE)▶$(NC) Building Client"
+	@echo "$(BLUE)▶$(NC) Building Color Test Client"
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
 	@echo "$(YELLOW)ℹ$(NC) Build output redirected to client-build.log"
 	@rm -f client-build.log
-	@make -f Makefile.test_client macos_wlclient_test > client-build.log 2>&1 || (cat client-build.log && exit 1)
-	@if [ ! -f "$(TEST_CLIENT_BIN)" ]; then \
+	@make -f Makefile.test_client macos_wlclient_color_test > client-build.log 2>&1 || (cat client-build.log && exit 1)
+	@if [ ! -f "macos_wlclient_color_test" ]; then \
 		echo "$(RED)✗$(NC) Build failed - see client-build.log"; \
 		exit 1; \
 	fi
-	@echo "$(GREEN)✓$(NC) Client built"
+	@echo "$(GREEN)✓$(NC) Color test client built"
 
 # Build input test client
 build-input-client:
@@ -318,11 +318,7 @@ compositor: clean-compositor build-compositor
 		mkdir -p "$$XDG_RUNTIME_DIR"; \
 		chmod 0700 "$$XDG_RUNTIME_DIR"; \
 		rm -f "$$XDG_RUNTIME_DIR/$$WAYLAND_DISPLAY"; \
-		$(COMPOSITOR_BIN) > /tmp/compositor-run.log 2>&1 & \
-		COMPOSITOR_PID=$$!; \
-		sleep 0.5; \
-		tail -f /tmp/compositor-run.log; \
-		wait $$COMPOSITOR_PID'
+		$(COMPOSITOR_BIN) 2>&1 | grep -v "failed to read client connection (pid 0)" | tee /tmp/compositor-run.log'
 
 # Debug target: rebuild compositor and run under lldb with stdout/stderr attached
 debug-compositor: clean-compositor build-compositor
@@ -425,13 +421,9 @@ client: clean-client build-client
 			echo "   Run compositor first: $(YELLOW)make compositor$(NC)"; \
 			echo ""; \
 		fi; \
-		echo "$(GREEN)✓$(NC) Starting client (WAYLAND_DEBUG=$${WAYLAND_DEBUG:-0})..."; \
+		echo "$(GREEN)✓$(NC) Starting color test client (WAYLAND_DEBUG=$${WAYLAND_DEBUG:-0})..."; \
 		echo ""; \
-		./$(TEST_CLIENT_BIN) > /tmp/client-run.log 2>&1 & \
-		CLIENT_PID=$$!; \
-		sleep 0.5; \
-		tail -f /tmp/client-run.log; \
-		wait $$CLIENT_PID'
+		./$(TEST_CLIENT_BIN) 2>&1 | tee /tmp/client-run.log'
 
 # Tart VM client: start Fedora VM, setup SSH keys, forward Wayland socket, run foot
 tartvm-client:
@@ -1062,7 +1054,7 @@ test:
 	@echo "$(YELLOW)ℹ$(NC) Runtime log: /tmp/compositor-run.log"
 	@echo ""
 	@rm -f /tmp/compositor-run.log
-	@$(COMPOSITOR_BIN) 2>&1 | tee /tmp/compositor-run.log
+	@$(COMPOSITOR_BIN) 2>&1 | grep -v "failed to read client connection (pid 0)" | tee /tmp/compositor-run.log
 
 # Uninstall Wayland
 uninstall:
