@@ -5,6 +5,7 @@
 #include "xdg-decoration-protocol.h"
 #include "xdg-toplevel-icon-protocol.h"
 #include "text-input-v3-protocol.h"
+#include "text-input-v1-protocol.h.server"
 #include "xdg_shell.h"
 #include "wayland_seat.h"
 #include "wayland_compositor.h"
@@ -289,6 +290,15 @@ static void fractional_scale_manager_get_fractional_scale(struct wl_client *clie
     
     // Detect macOS Retina display scale factor using CoreGraphics
     // This avoids needing Objective-C runtime in C file
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    // iOS: Use default scale (typically 2.0x for Retina)
+    CGFloat backingScale = 2.0; // iOS devices typically have Retina displays
+    // Convert CGFloat scale to 120ths (e.g., 2.0 -> 240, 1.5 -> 180)
+    preferred_scale = (uint32_t)(backingScale * 120.0);
+    // Clamp to reasonable values (between 120 and 480 = 1.0x to 4.0x)
+    if (preferred_scale < 120) preferred_scale = 120;
+    if (preferred_scale > 480) preferred_scale = 480;
+#else
     CGDirectDisplayID mainDisplay = CGMainDisplayID();
     if (mainDisplay != kCGNullDirectDisplay) {
         CGSize physicalSize = CGDisplayScreenSize(mainDisplay);
@@ -308,6 +318,7 @@ static void fractional_scale_manager_get_fractional_scale(struct wl_client *clie
             if (preferred_scale > 480) preferred_scale = 480;
         }
     }
+#endif
     
     wp_fractional_scale_v1_send_preferred_scale(scale, preferred_scale);
     log_printf("[FRACTIONAL_SCALE] ", "get_fractional_scale() - created resource %u with scale=%u (%.2fx)\n", id, preferred_scale, preferred_scale / 120.0);
@@ -486,16 +497,26 @@ static void toplevel_decoration_set_mode(struct wl_client *client, struct wl_res
         return;
     }
     
-    // SERVER_SIDE mode - show macOS window decorations
+    // SERVER_SIDE mode - show macOS window decorations (unless fullscreen)
     if (toplevel) {
         toplevel->decoration_mode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
         
-        // Notify macOS backend to show window decorations for this toplevel
+        // Check if this is a nested compositor or fullscreen
+        struct wl_client *nested_client = nested_compositor_client_from_xdg_shell();
+        bool is_nested_compositor = (nested_client == wl_resource_get_client(resource));
+        bool is_fullscreen = (toplevel->states & XDG_TOPLEVEL_STATE_FULLSCREEN) != 0;
+        
+        // Hide macOS decorations for nested compositors or fullscreen toplevels
         extern void macos_compositor_set_csd_mode_for_toplevel(struct xdg_toplevel_impl *toplevel, bool csd);
-        macos_compositor_set_csd_mode_for_toplevel(toplevel, false);
+        if (is_nested_compositor || is_fullscreen) {
+            macos_compositor_set_csd_mode_for_toplevel(toplevel, true); // Hide decorations
+            log_printf("[DECORATION] ", "toplevel_decoration_set_mode() - SERVER_SIDE mode (macOS decorations hidden for nested/fullscreen)\n");
+        } else {
+            macos_compositor_set_csd_mode_for_toplevel(toplevel, false); // Show decorations
+            log_printf("[DECORATION] ", "toplevel_decoration_set_mode() - SERVER_SIDE mode accepted (macOS decorations will be shown)\n");
+        }
     }
     
-    log_printf("[DECORATION] ", "toplevel_decoration_set_mode() - SERVER_SIDE mode accepted (macOS decorations will be shown)\n");
     zxdg_toplevel_decoration_v1_send_configure(resource, mode);
 }
 
@@ -528,26 +549,40 @@ static void decoration_manager_get_toplevel_decoration(struct wl_client *client,
     // Store toplevel pointer in decoration resource user_data for easy lookup
     wl_resource_set_implementation(decoration, &toplevel_decoration_interface, toplevel_impl, NULL);
     
-    // Default to SERVER_SIDE mode (macOS window decorations shown)
-    // Client can request CLIENT_SIDE mode via set_mode()
+    // Check if this is a nested compositor
+    struct wl_client *nested_client = nested_compositor_client_from_xdg_shell();
+    bool is_nested_compositor = (nested_client == client);
+    
+    // Check if toplevel is fullscreen (nested compositors are always fullscreen)
+    bool is_fullscreen = false;
+    if (toplevel_impl) {
+        // XDG_TOPLEVEL_STATE_FULLSCREEN = 2 (from xdg-shell-protocol.h)
+        is_fullscreen = (toplevel_impl->states & XDG_TOPLEVEL_STATE_FULLSCREEN) != 0;
+    }
+    
+    // For nested compositors or fullscreen toplevels, hide macOS decorations
+    // We still use SERVER_SIDE mode (for protocol compliance), but hide macOS decorations
     uint32_t decoration_mode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
     
     if (toplevel_impl) {
         toplevel_impl->decoration_mode = decoration_mode;
+        
+        // If nested compositor or fullscreen, hide macOS window decorations
+        if (is_nested_compositor || is_fullscreen) {
+            extern void macos_compositor_set_csd_mode_for_toplevel(struct xdg_toplevel_impl *toplevel, bool csd);
+            macos_compositor_set_csd_mode_for_toplevel(toplevel_impl, true); // true = hide decorations
+            log_printf("[DECORATION] ", "get_toplevel_decoration() - nested compositor/fullscreen detected, hiding macOS decorations\n");
+        }
     }
     
-    // Check if this is a nested compositor for logging
-    struct wl_client *nested_client = nested_compositor_client_from_xdg_shell();
-    bool is_nested_compositor = (nested_client == client);
-    
     if (is_nested_compositor) {
-        log_printf("[DECORATION] ", "get_toplevel_decoration() - nested compositor detected, defaulting to SERVER_SIDE (fullscreen=no decorations)\n");
+        log_printf("[DECORATION] ", "get_toplevel_decoration() - nested compositor detected, SERVER_SIDE mode (macOS decorations hidden)\n");
     } else {
         log_printf("[DECORATION] ", "get_toplevel_decoration() - regular client, defaulting to SERVER_SIDE mode (client can request CLIENT_SIDE)\n");
     }
     
     zxdg_toplevel_decoration_v1_send_configure(decoration, decoration_mode);
-    log_printf("[DECORATION] ", "get_toplevel_decoration() - created decoration id=%u (default SERVER_SIDE mode)\n", id);
+    log_printf("[DECORATION] ", "get_toplevel_decoration() - created decoration id=%u (SERVER_SIDE mode)\n", id);
 }
 
 static const struct zxdg_decoration_manager_v1_interface decoration_manager_interface = {
@@ -959,18 +994,256 @@ static void text_input_bind(struct wl_client *client, void *data, uint32_t versi
 
 struct wl_text_input_manager_impl *wl_text_input_create(struct wl_display *display) {
     struct wl_text_input_manager_impl *manager = calloc(1, sizeof(*manager));
-    if (!manager) return NULL;
+    if (!manager) {
+        log_printf("[TEXT_INPUT] ", "wl_text_input_create: failed to allocate manager\n");
+        return NULL;
+    }
 
     manager->display = display;
     manager->global = wl_global_create(display, &zwp_text_input_manager_v3_interface, 1, manager, text_input_bind);
     if (!manager->global) {
+        log_printf("[TEXT_INPUT] ", "wl_text_input_create: failed to create global\n");
         free(manager);
         return NULL;
     }
+    
+    log_printf("[TEXT_INPUT] ", "wl_text_input_create: created text input manager (global=%p, interface=%s)\n", 
+              (void *)manager->global, zwp_text_input_manager_v3_interface.name);
     return manager;
 }
 
 void wl_text_input_destroy(struct wl_text_input_manager_impl *manager) {
+    if (!manager) return;
+    wl_global_destroy(manager->global);
+    free(manager);
+}
+
+// ============================================================================
+// Text Input Protocol v1 (zwp_text_input_manager_v1) - for weston-editor compatibility
+// ============================================================================
+
+struct text_input_v1_data {
+    uint32_t serial;
+    bool enabled;
+    struct wl_resource *surface_resource;
+    struct wl_resource *seat_resource;
+};
+
+static void text_input_v1_resource_destroy(struct wl_resource *resource) {
+    struct text_input_v1_data *data = wl_resource_get_user_data(resource);
+    if (data) {
+        free(data);
+    }
+}
+
+// Minimal v1 text input implementation - just stubs for compatibility
+static void text_input_v1_activate(struct wl_client *client, struct wl_resource *resource,
+                                    struct wl_resource *seat, struct wl_resource *surface) {
+    (void)client;
+    struct text_input_v1_data *data = wl_resource_get_user_data(resource);
+    if (data) {
+        data->seat_resource = seat;
+        data->surface_resource = surface;
+        data->enabled = true;
+        log_printf("[TEXT_INPUT_V1] ", "text_input_v1_activate() - seat=%p, surface=%p\n",
+                   (void *)seat, (void *)surface);
+    }
+}
+
+static void text_input_v1_deactivate(struct wl_client *client, struct wl_resource *resource,
+                                      struct wl_resource *seat) {
+    (void)client;
+    (void)seat;
+    struct text_input_v1_data *data = wl_resource_get_user_data(resource);
+    if (data) {
+        data->enabled = false;
+        log_printf("[TEXT_INPUT_V1] ", "text_input_v1_deactivate()\n");
+    }
+}
+
+static void text_input_v1_show_input_panel(struct wl_client *client, struct wl_resource *resource) {
+    (void)client;
+    (void)resource;
+    log_printf("[TEXT_INPUT_V1] ", "text_input_v1_show_input_panel()\n");
+}
+
+static void text_input_v1_hide_input_panel(struct wl_client *client, struct wl_resource *resource) {
+    (void)client;
+    (void)resource;
+    log_printf("[TEXT_INPUT_V1] ", "text_input_v1_hide_input_panel()\n");
+}
+
+static void text_input_v1_reset(struct wl_client *client, struct wl_resource *resource) {
+    (void)client;
+    (void)resource;
+    log_printf("[TEXT_INPUT_V1] ", "text_input_v1_reset()\n");
+}
+
+static void text_input_v1_set_surrounding_text(struct wl_client *client, struct wl_resource *resource,
+                                                const char *text, uint32_t cursor, uint32_t anchor) {
+    (void)client;
+    (void)resource;
+    (void)text;
+    (void)cursor;
+    (void)anchor;
+    log_printf("[TEXT_INPUT_V1] ", "text_input_v1_set_surrounding_text()\n");
+}
+
+static void text_input_v1_set_content_type(struct wl_client *client, struct wl_resource *resource,
+                                            uint32_t hint, uint32_t purpose) {
+    (void)client;
+    (void)resource;
+    (void)hint;
+    (void)purpose;
+    log_printf("[TEXT_INPUT_V1] ", "text_input_v1_set_content_type()\n");
+}
+
+static void text_input_v1_set_cursor_rectangle(struct wl_client *client, struct wl_resource *resource,
+                                                int32_t x, int32_t y, int32_t width, int32_t height) {
+    (void)client;
+    (void)resource;
+    (void)x;
+    (void)y;
+    (void)width;
+    (void)height;
+    log_printf("[TEXT_INPUT_V1] ", "text_input_v1_set_cursor_rectangle()\n");
+}
+
+static void text_input_v1_set_preferred_language(struct wl_client *client, struct wl_resource *resource,
+                                                  const char *language) {
+    (void)client;
+    (void)resource;
+    (void)language;
+    log_printf("[TEXT_INPUT_V1] ", "text_input_v1_set_preferred_language()\n");
+}
+
+static void text_input_v1_commit_state(struct wl_client *client, struct wl_resource *resource,
+                                        uint32_t serial) {
+    (void)client;
+    struct text_input_v1_data *data = wl_resource_get_user_data(resource);
+    if (data) {
+        data->serial = serial;
+        log_printf("[TEXT_INPUT_V1] ", "text_input_v1_commit_state() - serial=%u\n", serial);
+    }
+}
+
+static void text_input_v1_invoke_action(struct wl_client *client, struct wl_resource *resource,
+                                         uint32_t button, uint32_t index) {
+    (void)client;
+    (void)resource;
+    (void)button;
+    (void)index;
+    log_printf("[TEXT_INPUT_V1] ", "text_input_v1_invoke_action()\n");
+}
+
+static const struct zwp_text_input_v1_interface text_input_v1_interface = {
+    .activate = text_input_v1_activate,
+    .deactivate = text_input_v1_deactivate,
+    .show_input_panel = text_input_v1_show_input_panel,
+    .hide_input_panel = text_input_v1_hide_input_panel,
+    .reset = text_input_v1_reset,
+    .set_surrounding_text = text_input_v1_set_surrounding_text,
+    .set_content_type = text_input_v1_set_content_type,
+    .set_cursor_rectangle = text_input_v1_set_cursor_rectangle,
+    .set_preferred_language = text_input_v1_set_preferred_language,
+    .commit_state = text_input_v1_commit_state,
+    .invoke_action = text_input_v1_invoke_action,
+};
+
+static void text_input_manager_v1_get_text_input(struct wl_client *client, struct wl_resource *resource,
+                                                   uint32_t id) {
+    log_printf("[TEXT_INPUT_V1] ", "text_input_manager_v1_get_text_input() - START: client=%p, resource=%p, id=%u\n",
+              (void *)client, (void *)resource, id);
+    
+    if (!client) {
+        log_printf("[TEXT_INPUT_V1] ", "text_input_manager_v1_get_text_input() - ERROR: client is NULL\n");
+        return;
+    }
+    
+    (void)resource;
+    log_printf("[TEXT_INPUT_V1] ", "text_input_manager_v1_get_text_input() - allocating data\n");
+    struct text_input_v1_data *data = calloc(1, sizeof(*data));
+    if (!data) {
+        log_printf("[TEXT_INPUT_V1] ", "text_input_manager_v1_get_text_input() - ERROR: failed to allocate data\n");
+        wl_client_post_no_memory(client);
+        return;
+    }
+    
+    log_printf("[TEXT_INPUT_V1] ", "text_input_manager_v1_get_text_input() - initializing data\n");
+    data->enabled = false;
+    data->serial = 0;
+    data->surface_resource = NULL;
+    data->seat_resource = NULL;
+    
+    log_printf("[TEXT_INPUT_V1] ", "text_input_manager_v1_get_text_input() - creating text input resource\n");
+    struct wl_resource *text_input = wl_resource_create(client, &zwp_text_input_v1_interface, 1, id);
+    if (!text_input) {
+        log_printf("[TEXT_INPUT_V1] ", "text_input_manager_v1_get_text_input() - ERROR: failed to create resource\n");
+        free(data);
+        wl_client_post_no_memory(client);
+        return;
+    }
+    
+    log_printf("[TEXT_INPUT_V1] ", "text_input_manager_v1_get_text_input() - setting implementation\n");
+    wl_resource_set_implementation(text_input, &text_input_v1_interface, data, text_input_v1_resource_destroy);
+    log_printf("[TEXT_INPUT_V1] ", "text_input_manager_v1_get_text_input() - SUCCESS: text_input=%p, id=%u\n", 
+              (void *)text_input, id);
+}
+
+static const struct zwp_text_input_manager_v1_interface text_input_manager_v1_interface = {
+    .create_text_input = text_input_manager_v1_get_text_input,
+};
+
+static void text_input_v1_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
+    log_printf("[TEXT_INPUT_V1] ", "text_input_v1_bind() - START: client=%p, version=%u, id=%u, data=%p\n", 
+              (void *)client, version, id, (void *)data);
+    
+    if (!client) {
+        log_printf("[TEXT_INPUT_V1] ", "text_input_v1_bind() - ERROR: client is NULL\n");
+        return;
+    }
+    
+    if (!data) {
+        log_printf("[TEXT_INPUT_V1] ", "text_input_v1_bind() - ERROR: data is NULL\n");
+        return;
+    }
+    
+    log_printf("[TEXT_INPUT_V1] ", "text_input_v1_bind() - creating resource with interface=%s\n", 
+              zwp_text_input_manager_v1_interface.name);
+    
+    struct wl_resource *resource = wl_resource_create(client, &zwp_text_input_manager_v1_interface, (int)version, id);
+    if (!resource) {
+        log_printf("[TEXT_INPUT_V1] ", "text_input_v1_bind() - ERROR: failed to create resource\n");
+        wl_client_post_no_memory(client);
+        return;
+    }
+    
+    log_printf("[TEXT_INPUT_V1] ", "text_input_v1_bind() - setting implementation\n");
+    wl_resource_set_implementation(resource, &text_input_manager_v1_interface, data, NULL);
+    log_printf("[TEXT_INPUT_V1] ", "text_input_v1_bind() - SUCCESS: resource=%p\n", (void *)resource);
+}
+
+struct wl_text_input_manager_v1_impl *wl_text_input_v1_create(struct wl_display *display) {
+    struct wl_text_input_manager_v1_impl *manager = calloc(1, sizeof(*manager));
+    if (!manager) {
+        log_printf("[TEXT_INPUT_V1] ", "wl_text_input_v1_create: failed to allocate manager\n");
+        return NULL;
+    }
+    
+    manager->display = display;
+    manager->global = wl_global_create(display, &zwp_text_input_manager_v1_interface, 1, manager, text_input_v1_bind);
+    if (!manager->global) {
+        log_printf("[TEXT_INPUT_V1] ", "wl_text_input_v1_create: failed to create global\n");
+        free(manager);
+        return NULL;
+    }
+    
+    log_printf("[TEXT_INPUT_V1] ", "wl_text_input_v1_create: created text input manager v1 (global=%p, interface=%s)\n",
+              (void *)manager->global, zwp_text_input_manager_v1_interface.name);
+    return manager;
+}
+
+void wl_text_input_v1_destroy(struct wl_text_input_manager_v1_impl *manager) {
     if (!manager) return;
     wl_global_destroy(manager->global);
     free(manager);

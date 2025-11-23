@@ -5,7 +5,11 @@
 
 #ifdef __OBJC__
 #import <Metal/Metal.h>
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+#import <IOSurface/IOSurfaceRef.h>
+#else
 #import <IOSurface/IOSurface.h>
+#endif
 #import <CoreVideo/CoreVideo.h>
 #else
 // Forward declarations for C code

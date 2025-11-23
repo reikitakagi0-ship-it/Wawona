@@ -1,4 +1,6 @@
 #include "logging.h"
+#include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -7,9 +9,20 @@ FILE *compositor_log_file = NULL;
 FILE *client_log_file = NULL;
 
 void init_compositor_logging(void) {
-    // Logging now goes to stdout/stderr which is redirected to /tmp/compositor-run.log
-    // No separate log file needed
-    compositor_log_file = NULL;
+    // Open log file for compositor
+    const char *log_path = "/tmp/compositor-run.log";
+    compositor_log_file = fopen(log_path, "a"); // Append mode
+    if (compositor_log_file) {
+        // Write header if file is new or empty
+        fseek(compositor_log_file, 0, SEEK_END);
+        if (ftell(compositor_log_file) == 0) {
+            fprintf(compositor_log_file, "=== Compositor Log Started ===\n");
+            fflush(compositor_log_file);
+        }
+    } else {
+        // Fallback to stderr if file can't be opened
+        fprintf(stderr, "Warning: Could not open log file %s, logging to stderr\n", log_path);
+    }
 }
 
 void init_client_logging(void) {
@@ -21,21 +34,11 @@ void init_client_logging(void) {
 void log_printf(const char *prefix, const char *format, ...) {
     va_list args;
     
-    // Print to stdout
-    if (prefix) {
-        printf("%s", prefix);
-    }
-    va_start(args, format);
-    #pragma clang diagnostic push
-    #pragma clang diagnostic ignored "-Wformat-nonliteral"
-    vprintf(format, args);
-    #pragma clang diagnostic pop
-    va_end(args);
-    fflush(stdout);
-    
-    // Print to log file (compositor or client based on which is initialized)
+    // Determine which log file to use (compositor or client)
     FILE *log_file = compositor_log_file ? compositor_log_file : client_log_file;
+    
     if (log_file) {
+        // Log to file (compositor or client log file)
         if (prefix) {
             fprintf(log_file, "%s", prefix);
         }
@@ -46,6 +49,18 @@ void log_printf(const char *prefix, const char *format, ...) {
         #pragma clang diagnostic pop
         va_end(args);
         fflush(log_file);
+    } else {
+        // Fallback to stderr if no log file is set
+        if (prefix) {
+            fprintf(stderr, "%s", prefix);
+        }
+        va_start(args, format);
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wformat-nonliteral"
+        vfprintf(stderr, format, args);
+        #pragma clang diagnostic pop
+        va_end(args);
+        fflush(stderr);
     }
 }
 

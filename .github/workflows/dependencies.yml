@@ -1,0 +1,309 @@
+name: Test Dependencies
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+
+env:
+  MACOS_VERSION: '14'
+
+jobs:
+  test-xkbcommon:
+    name: Build and Test xkbcommon
+    runs-on: macos-${{ env.MACOS_VERSION }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+          
+      - name: Install build dependencies
+        run: |
+          brew update
+          brew install meson ninja pkg-config bison || true
+          brew install wayland pixman || true
+          
+      - name: Install xkeyboard-config
+        run: |
+          brew install xkeyboard-config || true
+          
+      - name: Build xkbcommon
+        run: |
+          bash scripts/build-xkbcommon.sh
+          
+      - name: Test xkbcommon installation
+        run: |
+          echo "Testing xkbcommon installation..."
+          
+          # Check pkg-config
+          if pkg-config --exists xkbcommon; then
+            VERSION=$(pkg-config --modversion xkbcommon)
+            echo "✅ xkbcommon found: version $VERSION"
+          else
+            echo "❌ xkbcommon not found via pkg-config"
+            exit 1
+          fi
+          
+          # Check library exists
+          if [[ "$(uname -m)" == "arm64" ]] && [ -d "/opt/homebrew" ]; then
+            INSTALL_PREFIX="/opt/homebrew"
+          else
+            INSTALL_PREFIX="/usr/local"
+          fi
+          
+          if [ -f "$INSTALL_PREFIX/lib/libxkbcommon.dylib" ] || [ -f "$INSTALL_PREFIX/lib/libxkbcommon.a" ]; then
+            echo "✅ xkbcommon library found"
+          else
+            echo "❌ xkbcommon library not found"
+            exit 1
+          fi
+          
+          # Test basic functionality
+          if command -v xkbcli &> /dev/null; then
+            echo "✅ xkbcli tool found"
+            xkbcli --version || true
+          else
+            echo "⚠️ xkbcli tool not found (may be expected)"
+          fi
+          
+      - name: Test xkbcommon API
+        run: |
+          echo "Testing xkbcommon API..."
+          
+          # Create a simple test program
+          cat > /tmp/test_xkbcommon.c << 'EOF'
+          #include <xkbcommon/xkbcommon.h>
+          #include <stdio.h>
+          
+          int main() {
+              struct xkb_context *ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+              if (!ctx) {
+                  fprintf(stderr, "Failed to create xkb_context\n");
+                  return 1;
+              }
+              
+              printf("✅ xkb_context created successfully\n");
+              
+          struct xkb_keymap *keymap = xkb_keymap_new_from_names(
+              ctx, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
+              
+              if (keymap) {
+                  printf("✅ xkb_keymap loaded successfully\n");
+                  xkb_keymap_unref(keymap);
+              } else {
+                  printf("⚠️ xkb_keymap loading failed (may need xkeyboard-config)\n");
+              }
+              
+              xkb_context_unref(ctx);
+              return 0;
+          }
+          EOF
+          
+          # Compile and run test
+          if [[ "$(uname -m)" == "arm64" ]] && [ -d "/opt/homebrew" ]; then
+            INSTALL_PREFIX="/opt/homebrew"
+          else
+            INSTALL_PREFIX="/usr/local"
+          fi
+          
+          PKG_CONFIG_PATH="$INSTALL_PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH" \
+          clang -o /tmp/test_xkbcommon /tmp/test_xkbcommon.c \
+            $(pkg-config --cflags --libs xkbcommon) || {
+            echo "❌ Failed to compile xkbcommon test"
+            exit 1
+          }
+          
+          DYLD_LIBRARY_PATH="$INSTALL_PREFIX/lib:$DYLD_LIBRARY_PATH" \
+          /tmp/test_xkbcommon || {
+            echo "❌ xkbcommon test failed"
+            exit 1
+          }
+          
+          echo "✅ xkbcommon API test passed"
+
+  test-libinput:
+    name: Build and Test libinput (macOS Port)
+    runs-on: macos-${{ env.MACOS_VERSION }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+          
+      - name: Install build dependencies
+        run: |
+          brew update
+          brew install meson ninja pkg-config || true
+          brew install wayland pixman || true
+          
+      - name: Build libinput (macOS port)
+        run: |
+          echo "Building libinput for macOS..."
+          
+          # Navigate to libinput directory
+          cd libinput
+          
+          # Create macOS build directory
+          mkdir -p build-macos
+          cd build-macos
+          
+          # Configure build
+          meson setup . .. \
+            --prefix=/opt/homebrew \
+            --buildtype=release \
+            -Ddocumentation=false \
+            -Dtests=false \
+            -Ddebug-gui=false || {
+            echo "❌ libinput configuration failed"
+            exit 1
+          }
+          
+          # Build
+          ninja -j$(sysctl -n hw.ncpu) || {
+            echo "❌ libinput build failed"
+            exit 1
+          }
+          
+          echo "✅ libinput build successful"
+          
+      - name: Test libinput installation
+        run: |
+          echo "Testing libinput installation..."
+          
+          cd libinput/build-macos
+          
+          # Check if library was built
+          if [ -f "libinput.10.dylib" ]; then
+            echo "✅ libinput.10.dylib found"
+            ls -lh libinput.10.dylib
+          else
+            echo "❌ libinput.10.dylib not found"
+            exit 1
+          fi
+          
+          # Check for required symbols
+          if nm -gU libinput.10.dylib | grep -q "libinput_udev_create_context"; then
+            echo "✅ libinput_udev_create_context symbol found"
+          else
+            echo "⚠️ libinput_udev_create_context symbol not found (may be expected)"
+          fi
+          
+          if nm -gU libinput.10.dylib | grep -q "libinput_macos_create_context"; then
+            echo "✅ libinput_macos_create_context symbol found"
+          else
+            echo "❌ libinput_macos_create_context symbol not found"
+            exit 1
+          fi
+          
+          # Check for libevdev wrapper symbols
+          if nm -gU libinput.10.dylib | grep -q "libevdev_new"; then
+            echo "✅ libevdev wrapper symbols found"
+          else
+            echo "⚠️ libevdev wrapper symbols not found"
+          fi
+          
+      - name: Test libinput API (basic)
+        run: |
+          echo "Testing libinput API..."
+          
+          cd libinput/build-macos
+          
+          # Create a simple test program
+          cat > /tmp/test_libinput.c << 'EOF'
+          #include <libinput.h>
+          #include <stdio.h>
+          
+          // Forward declaration for macOS-specific API
+          struct libinput *libinput_macos_create_context(
+              const struct libinput_interface *interface,
+              void *user_data);
+          
+          int main() {
+              // Test macOS-specific API
+              struct libinput_interface interface = {
+                  .open_restricted = NULL,
+                  .close_restricted = NULL
+              };
+              
+              struct libinput *li = libinput_macos_create_context(&interface, NULL);
+              if (!li) {
+                  fprintf(stderr, "Failed to create libinput context\n");
+                  return 1;
+              }
+              
+              printf("✅ libinput context created successfully\n");
+              
+              // Test udev API compatibility
+              struct libinput *li2 = libinput_udev_create_context(&interface, NULL, NULL);
+              if (li2) {
+                  printf("✅ libinput_udev_create_context works\n");
+                  libinput_unref(li2);
+              } else {
+                  printf("⚠️ libinput_udev_create_context returned NULL (may be expected)\n");
+              }
+              
+              libinput_unref(li);
+              return 0;
+          }
+          EOF
+          
+          # Compile test
+          if ! clang -o /tmp/test_libinput /tmp/test_libinput.c \
+            -I../include \
+            -I../src \
+            -L. \
+            -Wl,-rpath,@loader_path \
+            libinput.10.dylib 2>&1 | grep -v "warning:" | grep -v "^$"; then
+            # Check if compilation actually succeeded despite warnings
+            if [ ! -f /tmp/test_libinput ]; then
+              echo "❌ Failed to compile libinput test"
+              clang -o /tmp/test_libinput /tmp/test_libinput.c \
+                -I../include \
+                -I../src \
+                -L. \
+                -Wl,-rpath,@loader_path \
+                libinput.10.dylib 2>&1 || true
+              exit 1
+            fi
+          fi
+          
+          # Run test
+          DYLD_LIBRARY_PATH=".:$DYLD_LIBRARY_PATH" \
+          /tmp/test_libinput || {
+            echo "❌ libinput test failed"
+            exit 1
+          }
+          
+          echo "✅ libinput API test passed"
+          
+      - name: Check libinput tools
+        run: |
+          cd libinput/build-macos
+          
+          # Check if tools were built
+          TOOLS=(
+            "libinput"
+            "libinput-list-devices"
+            "libinput-debug-events"
+            "libinput-quirks"
+          )
+          
+          for tool in "${TOOLS[@]}"; do
+            if [ -f "$tool" ]; then
+              echo "✅ $tool built successfully"
+            else
+              echo "⚠️ $tool not found (may be expected)"
+            fi
+          done
+

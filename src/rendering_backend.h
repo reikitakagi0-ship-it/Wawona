@@ -1,6 +1,10 @@
 #pragma once
 
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+#import <UIKit/UIKit.h>
+#else
 #import <Cocoa/Cocoa.h>
+#endif
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
 #include "wayland_compositor.h"

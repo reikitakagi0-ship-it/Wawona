@@ -108,3 +108,6 @@ bool wl_has_pending_frame_callbacks(void);
 // Clear buffer reference from surfaces (called when buffer is destroyed)
 void wl_compositor_clear_buffer_reference(struct wl_resource *buffer_resource);
 
+// Destroy all tracked clients (for shutdown) - explicitly disconnects all clients including waypipe
+void wl_compositor_destroy_all_clients(void);
+

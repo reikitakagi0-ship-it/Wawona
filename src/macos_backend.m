@@ -1,7 +1,9 @@
 #import "macos_backend.h"
 #import <QuartzCore/QuartzCore.h>
 #import <CoreVideo/CoreVideo.h>
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 #import <libproc.h>
+#endif
 #include <wayland-server-core.h>
 #include <wayland-server.h>
 #include <dispatch/dispatch.h>
@@ -27,9 +29,33 @@
 #include "wayland_idle_manager.h"
 #include "wayland_keyboard_shortcuts.h"
 #include "wayland_linux_dmabuf.h"
+#include "wayland_drm.h"
 #include "metal_waypipe.h"
+#include "xdg-shell-protocol.h"
 
-// Custom NSView subclass that accepts first responder status and handles keyboard events
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+// iOS: Use UIView instead of NSView
+@interface CompositorView : UIView
+@property (nonatomic, assign) InputHandler *inputHandler;
+@property (nonatomic, assign) SurfaceRenderer *renderer;
+@property (nonatomic, strong) MTKView *metalView;
+@end
+
+@implementation CompositorView
+- (void)drawRect:(CGRect)rect {
+    if (self.metalView && self.metalView.superview == self) {
+        return;
+    }
+    if (self.renderer) {
+        [self.renderer drawSurfacesInRect:rect];
+    } else {
+        [[UIColor colorWithRed:0.1 green:0.1 blue:0.2 alpha:1.0] setFill];
+        UIRectFill(rect);
+    }
+}
+@end
+#else
+// macOS: Use NSView
 @interface CompositorView : NSView
 @property (nonatomic, assign) InputHandler *inputHandler;  // assign for MRC compatibility
 @property (nonatomic, assign) SurfaceRenderer *renderer;  // assign for MRC compatibility
@@ -38,18 +64,14 @@
 
 @implementation CompositorView
 - (BOOL)isFlipped {
-    // Return YES to use top-left origin (like Wayland) instead of bottom-left (Cocoa default)
     return YES;
 }
 
 - (BOOL)mouseDownCanMoveWindow {
-    // Allow window to be moved by dragging the background
-    // This ensures window controls remain functional
     return YES;
 }
 
 - (BOOL)acceptsMouseMovedEvents {
-    // Accept mouse moved events for Wayland client input
     return YES;
 }
 
@@ -67,26 +89,18 @@
     return [super resignFirstResponder];
 }
 
-// Override drawRect: to draw Wayland surfaces using Cocoa/Quartz drawing
 - (void)drawRect:(NSRect)dirtyRect {
-    // If Metal view is active, don't draw here (Metal handles its own rendering)
-    // Also ensure Metal view completely covers this view to prevent any Cocoa drawing showing through
     if (self.metalView && self.metalView.superview == self) {
-        // Metal view should completely cover this view - no need to draw
         return;
     }
-    
-    // Draw all Wayland surfaces using Cocoa/Quartz drawing
     if (self.renderer) {
         [self.renderer drawSurfacesInRect:dirtyRect];
     } else {
-        // Fallback: draw background if no renderer
         [[NSColor colorWithRed:0.1 green:0.1 blue:0.2 alpha:1.0] setFill];
         NSRectFill(dirtyRect);
     }
 }
 
-// Override keyDown to handle keyboard events and prevent macOS keyboard fail sounds
 - (void)keyDown:(NSEvent *)event {
     if (self.inputHandler) {
         [self.inputHandler handleKeyboardEvent:event];
@@ -95,7 +109,6 @@
     }
 }
 
-// Override keyUp to handle keyboard release events
 - (void)keyUp:(NSEvent *)event {
     if (self.inputHandler) {
         [self.inputHandler handleKeyboardEvent:event];
@@ -104,18 +117,15 @@
     }
 }
 
-// Override performKeyEquivalent to handle special keys (like Cmd+Q, etc.)
-// Return YES to indicate we handled it, NO to let macOS handle it
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
-    // Only intercept if we have a focused Wayland surface
-    // Otherwise let macOS handle system shortcuts
     if (self.inputHandler && self.inputHandler.seat && self.inputHandler.seat->focused_surface) {
         [self.inputHandler handleKeyboardEvent:event];
-        return YES; // We handled it, prevent macOS from processing
+        return YES;
     }
     return [super performKeyEquivalent:event];
 }
 @end
+#endif
 
 // Static reference to compositor instance for C callback
 static MacOSCompositor *g_compositor_instance = NULL;
@@ -178,10 +188,16 @@ void macos_compositor_detect_full_compositor(struct wl_client *client) {
     
     if (client_pid > 0) {
         // Check process name to determine if this is a nested compositor
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
         char proc_path[PROC_PIDPATHINFO_MAXSIZE] = {0};
         int ret = proc_pidpath(client_pid, proc_path, sizeof(proc_path));
         if (ret > 0) {
             NSString *processPath = [NSString stringWithUTF8String:proc_path];
+#else
+        // iOS: Process name detection not available
+        NSString *processPath = nil;
+        if (0) {
+#endif
             processName = [processPath lastPathComponent];
             NSLog(@"🔍 Client binding to wl_compositor: %@ (PID: %d)", processName, client_pid);
             
@@ -297,9 +313,19 @@ static void renderSurfaceImmediate(struct wl_surface_impl *surface) {
     // Wayland spec requires compositors to repaint immediately on surface commit
     if ([g_compositor_instance.renderingBackend respondsToSelector:@selector(setNeedsDisplay)]) {
         [g_compositor_instance.renderingBackend setNeedsDisplay];
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    } else if (g_compositor_instance.window && g_compositor_instance.window.rootViewController.view) {
+        // iOS: Fallback for Cocoa backend
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [g_compositor_instance.window.rootViewController.view setNeedsDisplay];
+        });
+#else
     } else if (g_compositor_instance.window && g_compositor_instance.window.contentView) {
-        // Fallback for Cocoa backend
-        [g_compositor_instance.window.contentView setNeedsDisplay:YES];
+        // macOS: Fallback for Cocoa backend
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [g_compositor_instance.window.contentView setNeedsDisplay:YES];
+        });
+#endif
     }
 }
 
@@ -357,7 +383,11 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (g_compositor_instance.windowShown && g_compositor_instance.window) {
             NSLog(@"[WINDOW] All clients disconnected - hiding window");
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+            g_compositor_instance.window.hidden = YES;
+#else
             [g_compositor_instance.window orderOut:nil];
+#endif
             g_compositor_instance.windowShown = NO;
         }
     });
@@ -365,7 +395,11 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
 
 @implementation MacOSCompositor
 
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+- (instancetype)initWithDisplay:(struct wl_display *)display window:(UIWindow *)window {
+#else
 - (instancetype)initWithDisplay:(struct wl_display *)display window:(NSWindow *)window {
+#endif
     self = [super init];
     if (self) {
         _display = display;
@@ -377,39 +411,37 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
         _pending_resize_height = 0;
         _needs_resize_configure = NO;
         _windowShown = NO; // Track if window has been shown (delayed until first client)
+        _isFullscreen = NO; // Track if window is in fullscreen mode
+        _fullscreenExitTimer = nil; // Timer to exit fullscreen after client disconnects
+        _connectedClientCount = 0; // Track number of connected clients
         
         // Create custom view that accepts first responder and handles drawing
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+        CGRect contentRect = CGRectMake(0, 0, 800, 600);
+        CompositorView *compositorView = [[CompositorView alloc] initWithFrame:contentRect];
+        window.rootViewController = [[UIViewController alloc] init];
+        window.rootViewController.view = compositorView;
+#else
         NSRect contentRect = NSMakeRect(0, 0, 800, 600);
         CompositorView *compositorView = [[CompositorView alloc] initWithFrame:contentRect];
-        
-        // Use NSView drawing (like OWL compositor) - no CALayer needed
-        // The view will draw using drawRect: and CoreGraphics
         [window setContentView:compositorView];
-        
-        // Set window delegate to detect resize
         [window setDelegate:self];
-        
-        // Make window accept key events and become key window
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(windowDidEnterFullScreen:)
+                                                     name:NSWindowDidEnterFullScreenNotification
+                                                   object:window];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(windowDidExitFullScreen:)
+                                                     name:NSWindowDidExitFullScreenNotification
+                                                   object:window];
         [window setAcceptsMouseMovedEvents:YES];
-        
-        // Ensure window can become key and accept keyboard input
         [window setCollectionBehavior:NSWindowCollectionBehaviorDefault];
-        
-        // Make window resizable and allow focus
         [window setStyleMask:(NSWindowStyleMaskTitled |
                               NSWindowStyleMaskClosable |
                               NSWindowStyleMaskResizable |
                               NSWindowStyleMaskMiniaturizable)];
-        
-        // Don't show window initially - wait for first client to connect
-        // Window will be shown and sized when first surface buffer is committed
-        // [window makeKeyAndOrderFront:nil]; // DELAYED - shown when first client connects
-        
-        // Make compositor view first responder to receive keyboard events
         [window makeFirstResponder:compositorView];
-        
-        // Don't force window to become key yet - wait for client connection
-        // [window becomeKeyWindow]; // DELAYED - done when window is shown
+#endif
         
         // Create surface renderer with NSView (like OWL compositor)
         // Start with Cocoa renderer, will switch to Metal if full compositor detected
@@ -422,10 +454,14 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
         
         // Store global reference for C callbacks (MUST be set before clients connect)
         g_compositor_instance = self;
-        NSLog(@"   Global compositor instance set for client detection: %p", (void *)self);
+        NSLog(@"   Global compositor instance set for client detection: %p", (__bridge void *)self);
         
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+        NSLog(@"🚀 iOS Wayland Compositor initialized");
+#else
         NSLog(@"🚀 macOS Wayland Compositor initialized");
         NSLog(@"   Window: %@", window.title);
+#endif
         NSLog(@"   Display: %p", (void *)display);
         NSLog(@"   Initial backend: Cocoa (will auto-switch to Metal for full compositors)");
     }
@@ -437,7 +473,16 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
         _inputHandler = [[InputHandler alloc] initWithSeat:_seat window:_window compositor:self];
         [_inputHandler setupInputHandling];
         
-        // Set input handler reference in compositor view for keyboard event handling
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+        // iOS: Set input handler reference in compositor view
+        UIView *contentView = _window.rootViewController.view;
+        if ([contentView isKindOfClass:[CompositorView class]]) {
+            ((CompositorView *)contentView).inputHandler = _inputHandler;
+        }
+        // iOS: Touch events are handled via UIKit gesture recognizers
+        // Keyboard events are handled via UIResponder chain
+#else
+        // macOS: Set input handler reference in compositor view for keyboard event handling
         NSView *contentView = _window.contentView;
         if ([contentView isKindOfClass:[CompositorView class]]) {
             ((CompositorView *)contentView).inputHandler = _inputHandler;
@@ -479,7 +524,8 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
             return event;
         }];
         
-        NSLog(@"   ✓ Input handling set up");
+        NSLog(@"   ✓ Input handling set up (macOS)");
+#endif
     }
 }
 
@@ -510,8 +556,12 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
     wl_compositor_set_frame_callback_requested(_compositor, macos_compositor_frame_callback_requested);
     
     // Get window size for output
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    CGRect frame = _window.bounds;
+#else
     NSRect frame = [_window.contentView bounds];
-    _output = wl_output_create(_display, (int32_t)frame.size.width, (int32_t)frame.size.height, "macOS");
+#endif
+    _output = wl_output_create(_display, (int32_t)frame.size.width, (int32_t)frame.size.height, "iOS");
     if (!_output) {
         NSLog(@"❌ Failed to create wl_output");
         return NO;
@@ -555,7 +605,11 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
         return NO;
     }
     // Set initial output size
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    CGRect initialFrame = _window.bounds;
+#else
     NSRect initialFrame = [_window.contentView bounds];
+#endif
     xdg_wm_base_set_output_size(_xdg_wm_base, (int32_t)initialFrame.size.width, (int32_t)initialFrame.size.height);
     NSLog(@"   ✓ xdg_wm_base created");
     
@@ -598,11 +652,44 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
         NSLog(@"   ✓ Cursor shape protocol created");
     }
     
-    // Text input protocol
+    // Text input protocol v3
     struct wl_text_input_manager_impl *text_input = wl_text_input_create(_display);
-    if (text_input) {
-        NSLog(@"   ✓ Text input protocol created");
+    if (text_input && text_input->global) {
+        self.text_input_manager = text_input; // Store to keep it alive
+        NSLog(@"   ✓ Text input protocol v3 created (global=%p)", (void *)text_input->global);
+    } else {
+        NSLog(@"   ❌ Failed to create text input protocol v3");
+        self.text_input_manager = NULL;
     }
+    
+    // Text input protocol v1 (for weston-editor compatibility)
+    struct wl_text_input_manager_v1_impl *text_input_v1 = wl_text_input_v1_create(_display);
+    if (text_input_v1 && text_input_v1->global) {
+        NSLog(@"   ✓ Text input protocol v1 created (global=%p)", (void *)text_input_v1->global);
+    } else {
+        NSLog(@"   ❌ Failed to create text input protocol v1");
+    }
+    
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+    // EGL buffer handler (for rendering EGL/OpenGL ES buffers using KosmicKrisp+Zink)
+    struct egl_buffer_handler *egl_handler = calloc(1, sizeof(struct egl_buffer_handler));
+    if (egl_handler) {
+        if (egl_buffer_handler_init(egl_handler, _display) == 0) {
+            self.egl_buffer_handler = egl_handler;
+            NSLog(@"   ✓ EGL buffer handler initialized (KosmicKrisp+Zink)");
+        } else {
+            NSLog(@"   ⚠️ EGL buffer handler initialization failed (EGL may not be available)");
+            free(egl_handler);
+            self.egl_buffer_handler = NULL;
+        }
+    } else {
+        NSLog(@"   ❌ Failed to allocate EGL buffer handler");
+        self.egl_buffer_handler = NULL;
+    }
+#else
+    // iOS: EGL is disabled in KosmicKrisp
+    self.egl_buffer_handler = NULL;
+#endif
     
     // Viewporter protocol (critical for Weston compatibility)
     struct wl_viewporter_impl *viewporter = wl_viewporter_create(_display);
@@ -626,6 +713,12 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
     struct wl_linux_dmabuf_manager_impl *linux_dmabuf = wl_linux_dmabuf_create(_display);
     if (linux_dmabuf) {
         NSLog(@"   ✓ Linux DMA-BUF protocol created");
+    }
+    
+    // wl_drm protocol (for EGL fallback when dmabuf feedback doesn't provide render node)
+    struct wl_drm_impl *wl_drm = wl_drm_create(_display);
+    if (wl_drm) {
+        NSLog(@"   ✓ wl_drm protocol created (stub for macOS EGL compatibility)");
     }
     
     // Idle inhibit protocol (prevent screensaver)
@@ -755,8 +848,15 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
     _eventThread.name = @"WaylandEventThread";
     [_eventThread start];
     
-    // Set up frame rendering using CVDisplayLink - syncs to display refresh rate
+    // Set up frame rendering using CVDisplayLink/CADisplayLink - syncs to display refresh rate
     // This automatically matches the display's refresh rate (e.g., 60Hz, 120Hz, etc.)
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    CADisplayLink *displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayLinkCallback:)];
+    [displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
+    _displayLink = displayLink;
+    double refreshRate = displayLink.preferredFramesPerSecond > 0 ? (double)displayLink.preferredFramesPerSecond : 60.0;
+    NSLog(@"   Frame rendering active (%.0fHz - synced to display)", refreshRate);
+#else
     CVDisplayLinkRef displayLink = NULL;
     CVDisplayLinkCreateWithActiveCGDisplays(&displayLink);
     
@@ -786,6 +886,7 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
         _displayLink = NULL;
         NSLog(@"   Frame rendering active (60Hz - fallback timer)");
     }
+#endif
     
     // Add a heartbeat timer to show compositor is alive (every 5 seconds)
     static int heartbeat_count = 0;
@@ -819,7 +920,13 @@ void macos_compositor_check_and_hide_window_if_needed(void) {
     return NO;
 }
 
-// CVDisplayLink callback - called at display refresh rate
+// DisplayLink callback - called at display refresh rate
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+- (void)displayLinkCallback:(CADisplayLink *)displayLink {
+    (void)displayLink;
+    [self renderFrame];
+}
+#else
 static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
                                    const CVTimeStamp *inNow,
                                    const CVTimeStamp *inOutputTime,
@@ -840,6 +947,7 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
     }
     return kCVReturnSuccess;
 }
+#endif
 
 // Show and size window when first client connects
 - (void)showAndSizeWindowForFirstClient:(int32_t)width height:(int32_t)height {
@@ -850,7 +958,13 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
     NSLog(@"[WINDOW] First client connected - showing window with size %dx%d", width, height);
     
     // Resize window to match client surface size
-    // frameRectForContentRect automatically accounts for window frame (titlebar, borders)
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    // iOS: Set window frame directly
+    CGRect windowFrame = CGRectMake(0, 0, width, height);
+    _window.frame = windowFrame;
+    (void)width; (void)height; // Used in NSLog below
+#else
+    // macOS: frameRectForContentRect automatically accounts for window frame (titlebar, borders)
     NSRect contentRect = NSMakeRect(0, 0, width, height);
     NSRect windowFrame = [_window frameRectForContentRect:contentRect];
     
@@ -858,6 +972,13 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
     NSScreen *screen = [NSScreen mainScreen];
     NSRect screenFrame = screen ? screen.visibleFrame : NSMakeRect(0, 0, 1920, 1080);
     CGFloat x = screenFrame.origin.x + (screenFrame.size.width - windowFrame.size.width) / 2;
+#endif
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    // iOS: Set window frame directly
+    _window.frame = windowFrame;
+    UIView *contentView = _window.rootViewController.view;
+    contentView.frame = windowFrame;
+#else
     CGFloat y = screenFrame.origin.y + (screenFrame.size.height - windowFrame.size.height) / 2;
     windowFrame.origin = NSMakePoint(x, y);
     
@@ -870,8 +991,11 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
     NSRect contentViewFrame = [_window contentRectForFrameRect:windowFrame];
     contentViewFrame.origin = NSMakePoint(0, 0);  // Content view origin is always (0,0)
     contentView.frame = contentViewFrame;
+#endif
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
     NSLog(@"[WINDOW] Content view resized to: %.0fx%.0f", 
           contentViewFrame.size.width, contentViewFrame.size.height);
+#endif
     
     // Ensure Metal view (if exists) matches window size before showing
     if ([contentView isKindOfClass:[CompositorView class]]) {
@@ -882,11 +1006,17 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
             // Metal view frame should match content view bounds (in points)
             // CRITICAL: Do NOT manually set bounds - MTKView handles this automatically
             // Setting bounds manually interferes with MTKView's Retina scaling logic
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+            CGRect contentBounds = compositorView.bounds;
+            compositorView.metalView.frame = contentBounds;
+            [compositorView.metalView setNeedsDisplay];
+#else
             NSRect contentBounds = compositorView.bounds;
             compositorView.metalView.frame = contentBounds;
+            [compositorView.metalView setNeedsDisplay:YES];
+#endif
             // MTKView automatically sets bounds to match frame - don't override!
             // The drawableSize will be automatically calculated based on frame size and Retina scale
-            [compositorView.metalView setNeedsDisplay:YES];
             NSLog(@"[WINDOW] Metal view sized to match window content: frame=%.0fx%.0f (MTKView handles bounds/drawable automatically)", 
                   contentBounds.size.width, contentBounds.size.height);
         }
@@ -901,15 +1031,92 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
     }
     
     // Show window and make it key
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    _window.hidden = NO;
+    [_window makeKeyWindow];
+#else
     [_window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
     [_window becomeKeyWindow];
+#endif
     
     _windowShown = YES;
     
     NSLog(@"[WINDOW] Window shown and sized to %dx%d", width, height);
 }
 
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+// NSWindowDelegate method - called when window close button (X) is clicked
+- (BOOL)windowShouldClose:(NSWindow *)sender {
+    (void)sender;
+    
+    NSLog(@"[WINDOW] Window close button clicked - sending close event to client");
+    
+    // Get the global seat to find the focused surface
+    extern struct wl_seat_impl *global_seat;
+    if (!global_seat || !global_seat->focused_surface) {
+        NSLog(@"[WINDOW] No focused surface - closing window");
+        return YES; // Allow window to close
+    }
+    
+    // Get the focused surface
+    struct wl_surface_impl *focused_surface = (struct wl_surface_impl *)global_seat->focused_surface;
+    if (!focused_surface || !focused_surface->resource) {
+        NSLog(@"[WINDOW] Focused surface is invalid - closing window");
+        return YES; // Allow window to close
+    }
+    
+    // Find the toplevel associated with this surface
+    extern struct xdg_toplevel_impl *xdg_surface_get_toplevel_from_wl_surface(struct wl_surface_impl *wl_surface);
+    struct xdg_toplevel_impl *toplevel = xdg_surface_get_toplevel_from_wl_surface(focused_surface);
+    
+    if (!toplevel || !toplevel->resource) {
+        NSLog(@"[WINDOW] No toplevel found for focused surface - closing window");
+        return YES; // Allow window to close
+    }
+    
+    // Verify the toplevel resource is still valid
+    struct wl_client *client = wl_resource_get_client(toplevel->resource);
+    if (!client || wl_resource_get_user_data(toplevel->resource) == NULL) {
+        NSLog(@"[WINDOW] Toplevel resource is invalid - closing window");
+        return YES; // Allow window to close
+    }
+    
+    // Send close event to the client
+    NSLog(@"[WINDOW] Sending close event to client (toplevel=%p, client=%p)", (void *)toplevel, (void *)client);
+    
+    // Use the xdg_toplevel_send_close function from xdg-shell-protocol.h
+    // This sends the XDG_TOPLEVEL_CLOSE event to the client
+    wl_resource_post_event(toplevel->resource, XDG_TOPLEVEL_CLOSE);
+    
+    // Flush the client connection to ensure the close event is sent
+    wl_display_flush_clients(_display);
+    
+    // Disconnect the client after a short delay to allow it to handle the close event
+    // This gives well-behaved clients a chance to clean up gracefully
+    // Store the client pointer in a local variable for the block
+    struct wl_client *client_to_disconnect = client;
+    struct wl_resource *toplevel_resource = toplevel->resource;
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // Check if client is still connected by verifying the toplevel resource still belongs to it
+        if (client_to_disconnect && toplevel_resource) {
+            struct wl_client *current_client = wl_resource_get_client(toplevel_resource);
+            if (current_client == client_to_disconnect) {
+                // Client is still connected - disconnect it
+                NSLog(@"[WINDOW] Client did not close gracefully - disconnecting");
+                wl_client_destroy(client_to_disconnect);
+            }
+        }
+    });
+    
+    // Don't close the window immediately - let the client handle the close event
+    // The window will be closed when the client disconnects
+    return NO; // Prevent window from closing immediately
+}
+#endif
+
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 // NSWindowDelegate method - called when window becomes key
 - (void)windowDidBecomeKey:(NSNotification *)notification {
     (void)notification;
@@ -922,8 +1129,47 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
     }
 }
 
+// NSWindowDelegate method - called when window enters fullscreen
+- (void)windowDidEnterFullScreen:(NSNotification *)notification {
+    (void)notification;
+    _isFullscreen = YES;
+    NSLog(@"[FULLSCREEN] Window entered fullscreen");
+}
+
+// NSWindowDelegate method - called when window exits fullscreen
+- (void)windowDidExitFullScreen:(NSNotification *)notification {
+    (void)notification;
+    _isFullscreen = NO;
+    
+    // Cancel any pending exit timer
+    if (_fullscreenExitTimer) {
+        [_fullscreenExitTimer invalidate];
+        _fullscreenExitTimer = nil;
+    }
+    
+    // Ensure titlebar is visible after exiting fullscreen (especially if client disconnected)
+    // This allows users to interact with the window even if no clients are connected
+    if (_window && _connectedClientCount == 0) {
+        NSWindowStyleMask titlebarStyle = (NSWindowStyleMaskTitled |
+                                           NSWindowStyleMaskClosable |
+                                           NSWindowStyleMaskResizable |
+                                           NSWindowStyleMaskMiniaturizable);
+        if (_window.styleMask != titlebarStyle) {
+            _window.styleMask = titlebarStyle;
+            NSLog(@"[FULLSCREEN] Restored titlebar after exiting fullscreen (no clients connected)");
+        }
+    }
+    
+    NSLog(@"[FULLSCREEN] Window exited fullscreen");
+}
+#endif
+
 // NSWindowDelegate method - called when window is resized
 - (void)windowDidResize:(NSNotification *)notification {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    // iOS: Handle resize differently
+    (void)notification;
+#else
     NSWindow *window = notification.object;
     NSRect frame = [window.contentView bounds];
     int32_t width = (int32_t)frame.size.width;
@@ -947,14 +1193,34 @@ static CVReturn displayLinkCallback(CVDisplayLinkRef displayLink,
                   metalFrame.size.width, metalFrame.size.height);
             
             // Trigger Metal view to update its drawable size
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+            [compositorView.metalView setNeedsDisplay];
+        } else {
+            // Cocoa backend - trigger redraw
+            [contentView setNeedsDisplay];
+#else
             [compositorView.metalView setNeedsDisplay:YES];
         } else {
             // Cocoa backend - trigger redraw
             [contentView setNeedsDisplay:YES];
+#endif
         }
     }
+#endif
     
-    // Update output size
+    // Update output size (width and height are declared in platform-specific branches above)
+    int32_t width, height;
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    CGRect frame = _window.bounds;
+    width = (int32_t)frame.size.width;
+    height = (int32_t)frame.size.height;
+#else
+    NSWindow *window = notification.object;
+    NSRect frame = [window.contentView bounds];
+    width = (int32_t)frame.size.width;
+    height = (int32_t)frame.size.height;
+#endif
+    
     if (_output) {
         wl_output_update_size(_output, width, height);
     }
@@ -1169,6 +1435,24 @@ static void render_surface_iterator(struct wl_surface_impl *surface, void *data)
     // Trigger view redraw if surfaces were rendered
     // CRITICAL: Even with Metal backend continuous rendering, we must trigger redraw
     // when surfaces are updated to ensure immediate display of nested compositor updates
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    UIView *contentView = _window.rootViewController.view;
+    if (surfacesWereRendered && _window && contentView) {
+        if (_backendType == 1) {
+            // Metal backend - trigger redraw using renderer's setNeedsDisplay method
+            // This ensures nested compositors (like Weston) see updates immediately
+            if ([self->_renderingBackend respondsToSelector:@selector(setNeedsDisplay)]) {
+                [self->_renderingBackend setNeedsDisplay];
+            }
+        } else {
+            // Cocoa backend - needs explicit redraw
+            [contentView setNeedsDisplay];
+        }
+    } else if (_window && contentView && _backendType != 1) {
+        // Cocoa backend always needs redraw for frame callbacks
+        [contentView setNeedsDisplay];
+    }
+#else
     if (surfacesWereRendered && _window && _window.contentView) {
         if (_backendType == 1) {
             // Metal backend - trigger redraw using renderer's setNeedsDisplay method
@@ -1184,8 +1468,61 @@ static void render_surface_iterator(struct wl_surface_impl *surface, void *data)
         // Cocoa backend always needs redraw for frame callbacks
         [_window.contentView setNeedsDisplay:YES];
     }
+#endif
 }
 
+
+// Helper function to disconnect all clients gracefully
+static void disconnect_all_clients(struct wl_display *display) {
+    if (!display) return;
+    
+    log_printf("[COMPOSITOR] ", "🔌 Disconnecting all clients...\n");
+    
+    // Terminate display to stop accepting new connections first
+    wl_display_terminate(display);
+    
+    // Flush once to send termination signal
+    wl_display_flush_clients(display);
+    
+    // Process a few events to let termination propagate
+    struct wl_event_loop *eventLoop = wl_display_get_event_loop(display);
+    for (int i = 0; i < 5; i++) {
+        int ret = wl_event_loop_dispatch(eventLoop, 10);
+        if (ret < 0) break;
+        wl_display_flush_clients(display);
+    }
+    
+    // Use the official Wayland server API to destroy all clients
+    // This is the proper protocol-compliant way to disconnect all clients
+    wl_display_destroy_clients(display);
+    
+    // Process events multiple times AFTER destroying clients
+    // This gives clients (like waypipe) time to detect the disconnect and exit gracefully
+    for (int i = 0; i < 30; i++) {
+        // Dispatch events with a short timeout
+        int ret = wl_event_loop_dispatch(eventLoop, 50);
+        if (ret < 0) {
+            // Error or no more events - continue a bit more to ensure cleanup
+            if (i < 15) {
+                // Still process a few more times even on error to let waypipe detect disconnect
+                continue;
+            } else {
+                break;
+            }
+        }
+        // Flush all client connections to send pending messages
+        wl_display_flush_clients(display);
+    }
+    
+    // Small delay to allow waypipe and other clients to fully detect disconnect and exit
+    // This helps prevent "Broken pipe" errors from appearing after shutdown
+    usleep(100000); // 100ms delay
+    
+    // Final flush to ensure all messages are sent
+    wl_display_flush_clients(display);
+    
+    log_printf("[COMPOSITOR] ", "✅ Client disconnection complete\n");
+}
 
 - (void)stop {
     NSLog(@"🛑 Stopping compositor backend...");
@@ -1195,11 +1532,15 @@ static void render_surface_iterator(struct wl_surface_impl *surface, void *data)
         g_compositor_instance = NULL;
     }
     
-    // Signal event thread to stop
-    _shouldStopEventThread = YES;
+    // CRITICAL: Disconnect clients FIRST while event thread is still running
+    // This ensures the event loop can properly process disconnection events
+    // and send them to clients (like waypipe) so they can detect the disconnect
     if (_display) {
-        wl_display_terminate(_display);
+        disconnect_all_clients(_display);
     }
+    
+    // Now signal event thread to stop (after clients are disconnected)
+    _shouldStopEventThread = YES;
     
     // Wait for event thread to finish (with timeout)
     if (_eventThread && [_eventThread isExecuting]) {
@@ -1217,8 +1558,12 @@ static void render_surface_iterator(struct wl_surface_impl *surface, void *data)
     
     // Stop display link
     if (_displayLink) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+        [_displayLink invalidate];
+#else
         CVDisplayLinkStop(_displayLink);
         CVDisplayLinkRelease(_displayLink);
+#endif
         _displayLink = NULL;
     }
     
@@ -1267,7 +1612,13 @@ static void render_surface_iterator(struct wl_surface_impl *surface, void *data)
     NSLog(@"🔄 Switching to Metal rendering backend for full compositor support");
     
     // Get the compositor view
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    UIView *contentView = _window.rootViewController.view;
+    CGRect windowBounds;
+#else
     NSView *contentView = _window.contentView;
+    NSRect windowBounds;
+#endif
     if (![contentView isKindOfClass:[CompositorView class]]) {
         NSLog(@"⚠️ Content view is not CompositorView, cannot switch to Metal");
         return;
@@ -1276,7 +1627,7 @@ static void render_surface_iterator(struct wl_surface_impl *surface, void *data)
     CompositorView *compositorView = (CompositorView *)contentView;
     
     // Get current window size for Metal view
-    NSRect windowBounds = compositorView.bounds;
+    windowBounds = compositorView.bounds;
     
     // Create Metal view with exact window size
     // Use a custom class that allows window dragging for proper window controls
@@ -1288,14 +1639,17 @@ static void render_surface_iterator(struct wl_surface_impl *surface, void *data)
         // Fallback to regular MTKView if custom class not available
         metalView = [[MTKView alloc] initWithFrame:windowBounds];
     }
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    metalView.autoresizingMask = (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight);
+#else
     metalView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    metalView.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
-    metalView.clearColor = MTLClearColorMake(0.1, 0.1, 0.2, 1.0);
-    
     // Ensure Metal view is opaque and properly configured
     metalView.wantsLayer = YES;
     metalView.layer.opaque = YES;
     metalView.layerContentsRedrawPolicy = NSViewLayerContentsRedrawDuringViewResize;
+#endif
+    metalView.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
+    metalView.clearColor = MTLClearColorMake(0.1, 0.1, 0.2, 1.0);
     
     // CRITICAL: Don't block mouse events - allow window controls to work
     // The Metal view should not intercept mouse events meant for window controls
@@ -1319,6 +1673,15 @@ static void render_surface_iterator(struct wl_surface_impl *surface, void *data)
     
     // Add Metal view as subview (on top of Cocoa view for rendering)
     // The Metal view renders content but allows events to pass through to CompositorView
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    [compositorView addSubview:metalView];
+    compositorView.metalView = metalView;
+    // iOS: Touch events are handled via UIKit gesture recognizers
+    // Re-setup input handling if needed
+    if (_inputHandler) {
+        [_inputHandler setupInputHandling];
+    }
+#else
     [compositorView addSubview:metalView positioned:NSWindowAbove relativeTo:nil];
     compositorView.metalView = metalView;
     
@@ -1341,6 +1704,7 @@ static void render_surface_iterator(struct wl_surface_impl *surface, void *data)
         // Re-setup input handling with updated tracking area
         [_inputHandler setupInputHandling];
     }
+#endif
     
     // Switch rendering backend
     _renderingBackend = metalRenderer;
@@ -1358,42 +1722,75 @@ static void render_surface_iterator(struct wl_surface_impl *surface, void *data)
 - (void)updateWindowTitleForClient:(struct wl_client *)client {
     if (!_window || !client) return;
     
-    // Try to get client process name
-    pid_t client_pid = 0;
-    uid_t client_uid = 0;
-    gid_t client_gid = 0;
-    wl_client_get_credentials(client, &client_pid, &client_uid, &client_gid);
+    NSString *windowTitle = @"Wawona"; // Default title when no clients
     
-    NSString *windowTitle = @"Wawona"; // Default title
-    
-    if (client_pid > 0) {
-        char proc_path[PROC_PIDPATHINFO_MAXSIZE] = {0};
-        int ret = proc_pidpath(client_pid, proc_path, sizeof(proc_path));
-        if (ret > 0) {
-            NSString *processPath = [NSString stringWithUTF8String:proc_path];
-            NSString *processName = [processPath lastPathComponent];
-            // Remove common suffixes and make it look nice
-            processName = [processName stringByReplacingOccurrencesOfString:@".exe" withString:@""];
-            windowTitle = [NSString stringWithFormat:@"%@ - Wawona", processName];
-        }
-    } else {
-        // For waypipe connections, try to detect based on focused surface
-        // Check if we have a focused surface and try to infer the client name
-        if (_seat && _seat->focused_surface) {
-            struct wl_surface_impl *surface = (struct wl_surface_impl *)_seat->focused_surface;
-            if (surface && surface->resource) {
-                struct wl_client *surface_client = wl_resource_get_client(surface->resource);
-                if (surface_client == client) {
-                    // This is the focused client - use a generic name
-                    windowTitle = @"Wayland Client - Wawona";
+    // Try to get the focused surface's toplevel title/app_id
+    if (_seat && _seat->focused_surface) {
+        struct wl_surface_impl *surface = (struct wl_surface_impl *)_seat->focused_surface;
+        if (surface && surface->resource) {
+            struct wl_client *surface_client = wl_resource_get_client(surface->resource);
+            if (surface_client == client) {
+                // Get the toplevel for this surface
+                extern struct xdg_toplevel_impl *xdg_surface_get_toplevel_from_wl_surface(struct wl_surface_impl *wl_surface);
+                struct xdg_toplevel_impl *toplevel = xdg_surface_get_toplevel_from_wl_surface(surface);
+                
+                if (toplevel) {
+                    // Prefer title over app_id, fallback to app_id if title is not set
+                    if (toplevel->title && strlen(toplevel->title) > 0) {
+                        windowTitle = [NSString stringWithUTF8String:toplevel->title];
+                    } else if (toplevel->app_id && strlen(toplevel->app_id) > 0) {
+                        // Use app_id, but make it more readable
+                        NSString *appId = [NSString stringWithUTF8String:toplevel->app_id];
+                        // Remove common prefixes like "org.freedesktop." or "com."
+                        appId = [appId stringByReplacingOccurrencesOfString:@"org.freedesktop." withString:@""];
+                        appId = [appId stringByReplacingOccurrencesOfString:@"com." withString:@""];
+                        // Capitalize first letter
+                        if (appId.length > 0) {
+                            appId = [[appId substringToIndex:1].uppercaseString stringByAppendingString:[appId substringFromIndex:1]];
+                        }
+                        windowTitle = appId;
+                    }
+                }
+                
+                // If we still don't have a title, try process name as fallback
+                if ([windowTitle isEqualToString:@"Wawona"]) {
+                    pid_t client_pid = 0;
+                    uid_t client_uid = 0;
+                    gid_t client_gid = 0;
+                    wl_client_get_credentials(client, &client_pid, &client_uid, &client_gid);
+                    
+                    if (client_pid > 0) {
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+                        char proc_path[PROC_PIDPATHINFO_MAXSIZE] = {0};
+                        int ret = proc_pidpath(client_pid, proc_path, sizeof(proc_path));
+                        if (ret > 0) {
+                            NSString *processPath = [NSString stringWithUTF8String:proc_path];
+#else
+                        // iOS: Process name detection not available
+                        NSString *processPath = nil;
+                        if (0) {
+#endif
+                            NSString *processName = [processPath lastPathComponent];
+                            // Remove common suffixes and make it look nice
+                            processName = [processName stringByReplacingOccurrencesOfString:@".exe" withString:@""];
+                            windowTitle = processName;
+                        }
+                    }
                 }
             }
         }
     }
     
     // Update window title
-    [_window setTitle:windowTitle];
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    // iOS: Window titles are not displayed in the same way
+    (void)windowTitle;
     NSLog(@"[WINDOW] Updated title to: %@", windowTitle);
+#else
+    // macOS: Update titlebar title
+    [_window setTitle:windowTitle];
+    NSLog(@"[WINDOW] Updated titlebar title to: %@", windowTitle);
+#endif
 }
 
 // C function to set CSD mode for a toplevel (hide/show macOS window decorations)
@@ -1401,7 +1798,9 @@ void macos_compositor_set_csd_mode_for_toplevel(struct xdg_toplevel_impl *toplev
     if (!g_compositor_instance || !toplevel) {
         return;
     }
-    
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    (void)csd; // iOS: CSD mode not applicable
+#else
     // Dispatch to main thread to update UI
     dispatch_async(dispatch_get_main_queue(), ^{
         NSWindow *window = g_compositor_instance.window;
@@ -1411,6 +1810,17 @@ void macos_compositor_set_csd_mode_for_toplevel(struct xdg_toplevel_impl *toplev
         
         // Get current style mask
         NSWindowStyleMask currentStyle = window.styleMask;
+        
+        // CRITICAL: Cannot change styleMask while window is in fullscreen - macOS throws exception
+        // We'll handle fullscreen titlebar visibility by exiting fullscreen after client disconnect
+        // (see macos_compositor_handle_client_disconnect)
+        BOOL isFullscreen = g_compositor_instance.isFullscreen;
+        
+        // Don't change style mask while in fullscreen - wait for fullscreen to exit first
+        if (isFullscreen) {
+            NSLog(@"[CSD] Skipping styleMask change - window is in fullscreen (will be handled after exit)");
+            return;
+        }
         
         if (csd) {
             // CLIENT_SIDE decorations - hide macOS window decorations
@@ -1433,6 +1843,7 @@ void macos_compositor_set_csd_mode_for_toplevel(struct xdg_toplevel_impl *toplev
             }
         }
     });
+#endif
 }
 
 // C function to activate/raise the window (called from activation protocol)
@@ -1440,7 +1851,7 @@ void macos_compositor_activate_window(void) {
     if (!g_compositor_instance) {
         return;
     }
-    
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
     // Dispatch to main thread to raise window
     dispatch_async(dispatch_get_main_queue(), ^{
         NSWindow *window = g_compositor_instance.window;
@@ -1455,11 +1866,153 @@ void macos_compositor_activate_window(void) {
         
         NSLog(@"[ACTIVATION] Window activated and raised to front");
     });
+#endif
+}
+
+// C function to handle client disconnection (may exit fullscreen if needed)
+void macos_compositor_handle_client_disconnect(void) {
+    if (!g_compositor_instance) {
+        return;
+    }
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        MacOSCompositor *compositor = g_compositor_instance;
+        
+        // Decrement client count
+        if (compositor.connectedClientCount > 0) {
+            compositor.connectedClientCount--;
+        }
+        
+        NSLog(@"[FULLSCREEN] Client disconnected. Connected clients: %lu", (unsigned long)compositor.connectedClientCount);
+        
+        // If we're in fullscreen and have no clients, start exit timer
+        // NOTE: We cannot change styleMask while in fullscreen - macOS throws an exception
+        // Instead, we'll exit fullscreen after 10 seconds, which will restore the titlebar
+        if (compositor.isFullscreen && compositor.connectedClientCount == 0) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+            // iOS: Fullscreen handling not applicable
+            (void)compositor;
+#else
+            NSWindow *window = compositor.window;
+            if (window) {
+                // Cancel any existing timer
+                if (compositor.fullscreenExitTimer) {
+                    [compositor.fullscreenExitTimer invalidate];
+                    compositor.fullscreenExitTimer = nil;
+                }
+                
+                // Start 10-second timer to close window if no new client connects
+                // If no clients are connected, there's no reason to keep the window open
+                compositor.fullscreenExitTimer = [NSTimer scheduledTimerWithTimeInterval:10.0
+                                                                                   repeats:NO
+                                                                                     block:^(NSTimer *timer) {
+                    (void)timer; // Unused parameter
+                    // Check if we still have no clients
+                    if (compositor.connectedClientCount == 0 && compositor.isFullscreen) {
+                        NSLog(@"[FULLSCREEN] No clients connected after 10 seconds - closing window");
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+                        // iOS: Hide window instead of closing
+                        window.hidden = YES;
+#else
+                        if (@available(macOS 10.12, *)) {
+                            [window performClose:nil];
+                        }
+#endif
+                    }
+                    compositor.fullscreenExitTimer = nil;
+                }];
+                NSLog(@"[FULLSCREEN] Started 10-second timer to close window if no client connects");
+            }
+#endif
+        }
+    });
+}
+
+// C function to handle new client connection (cancel fullscreen exit timer)
+void macos_compositor_handle_client_connect(void) {
+    if (!g_compositor_instance) {
+        return;
+    }
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        MacOSCompositor *compositor = g_compositor_instance;
+        
+        // Increment client count
+        compositor.connectedClientCount++;
+        
+        NSLog(@"[FULLSCREEN] Client connected. Connected clients: %lu", (unsigned long)compositor.connectedClientCount);
+        
+        // Cancel fullscreen exit timer if a client connected
+        if (compositor.fullscreenExitTimer) {
+            [compositor.fullscreenExitTimer invalidate];
+            compositor.fullscreenExitTimer = nil;
+            NSLog(@"[FULLSCREEN] Cancelled fullscreen exit timer (client connected)");
+        }
+    });
+}
+
+// C function to update window title when no clients are connected
+void macos_compositor_update_title_no_clients(void) {
+    if (!g_compositor_instance) {
+        return;
+    }
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        MacOSCompositor *compositor = g_compositor_instance;
+        if (compositor.window) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+            // iOS: Window titles not displayed
+            (void)compositor;
+#else
+            [compositor.window setTitle:@"Wawona"];
+#endif
+            NSLog(@"[WINDOW] Updated titlebar title to: Wawona (no clients connected)");
+        }
+    });
+}
+
+// C function to get EGL buffer handler (for rendering EGL buffers)
+struct egl_buffer_handler *macos_compositor_get_egl_buffer_handler(void) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    // iOS: EGL is disabled
+    return NULL;
+#else
+    if (!g_compositor_instance) {
+        return NULL;
+    }
+    return g_compositor_instance.egl_buffer_handler;
+#endif
 }
 
 - (void)dealloc {
+    // Remove notification observers
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    
+    // Clean up timer
+    if (_fullscreenExitTimer) {
+        [_fullscreenExitTimer invalidate];
+        _fullscreenExitTimer = nil;
+    }
+    
+    // Clean up text input manager
+    if (_text_input_manager) {
+        wl_text_input_destroy(_text_input_manager);
+        _text_input_manager = NULL;
+    }
+    
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+    // Clean up EGL buffer handler
+    if (_egl_buffer_handler) {
+        egl_buffer_handler_cleanup(_egl_buffer_handler);
+        free(_egl_buffer_handler);
+        _egl_buffer_handler = NULL;
+    }
+#endif
+    
     [self stop];
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
     [super dealloc];
+#endif
 }
 
 @end

@@ -1,6 +1,10 @@
 #import "surface_renderer.h"
 #import <CoreGraphics/CoreGraphics.h>
 #include "wayland_compositor.h"
+#include "macos_backend.h"
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+#include "egl_buffer_handler.h"
+#endif
 #include <wayland-server-core.h>
 #include <wayland-server.h>
 
@@ -8,7 +12,11 @@
 // OPTIMIZED: Cache CGImage to avoid recreating on every frame
 @interface SurfaceImage : NSObject
 @property (nonatomic, assign) CGImageRef image;
-@property (nonatomic, assign) NSRect frame;
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+@property (nonatomic, assign) CGRect frame;
+#else
+@property (nonatomic, assign) CGRect frame;
+#endif
 @property (nonatomic, assign) struct wl_surface_impl *surface;
 @property (nonatomic, assign) void *lastBufferData;  // Track buffer to avoid unnecessary recreations
 @property (nonatomic, assign) int32_t lastWidth;
@@ -22,7 +30,9 @@
         CGImageRelease(_image);
         _image = NULL;
     }
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
     [super dealloc];
+#endif
 }
 @end
 
@@ -100,7 +110,15 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
 
 @implementation SurfaceRenderer
 
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+- (instancetype)initWithCompositorView:(UIView *)view {
+#else
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+- (instancetype)initWithCompositorView:(UIView *)view {
+#else
 - (instancetype)initWithCompositorView:(NSView *)view {
+#endif
+#endif
     self = [super init];
     if (self) {
         _compositorView = view;
@@ -145,7 +163,7 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
     }
     
     // Get compositor window bounds to clamp surface rendering
-    NSRect compositorBounds = self.compositorView ? self.compositorView.bounds : NSMakeRect(0, 0, 800, 600);
+    CGRect compositorBounds = self.compositorView ? self.compositorView.bounds : CGRectMake(0, 0, 800, 600);
     CGFloat maxWidth = compositorBounds.size.width;
     CGFloat maxHeight = compositorBounds.size.height;
     
@@ -158,7 +176,7 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
             surfaceImage.image = NULL;  // Clear image but keep entry
         }
         if (self.compositorView) {
-            [self.compositorView setNeedsDisplay:YES];
+            [self.compositorView setNeedsDisplay];
         }
         return;
     }
@@ -176,7 +194,7 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
             surfaceImage.image = NULL;
         }
         if (self.compositorView) {
-            [self.compositorView setNeedsDisplay:YES];
+            [self.compositorView setNeedsDisplay];
         }
         return;
     }
@@ -193,12 +211,12 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
             surfaceImage.image = NULL;
         }
         if (self.compositorView) {
-            [self.compositorView setNeedsDisplay:YES];
+            [self.compositorView setNeedsDisplay];
         }
         return;
     }
     
-    // Try to get buffer info - first check if it's our custom buffer or standard Wayland SHM buffer
+    // Try to get buffer info - first check if it's an SHM buffer, then check for custom buffer_data
     struct buffer_data {
         void *data;
         int32_t offset;
@@ -208,45 +226,150 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
         uint32_t format;
     };
     
-    struct buffer_data *buf_data = wl_resource_get_user_data(surface->buffer_resource);
     int32_t width, height, stride;
     uint32_t format;
     void *data = NULL;
-    struct wl_shm_buffer *shm_buffer = NULL;
+    struct wl_shm_buffer *shm_buffer = wl_shm_buffer_get(surface->buffer_resource);
+    struct buffer_data *buf_data = NULL;
     
-    // Verify buffer data is valid
-    if (!buf_data || !buf_data->data) {
-        // Buffer was destroyed or invalid - clear image and return
-        surface->buffer_resource = NULL;
-        surface->buffer_release_sent = true;
-        NSNumber *key = [NSNumber numberWithUnsignedLongLong:(unsigned long long)surface];
-        SurfaceImage *surfaceImage = self.surfaceImages[key];
-        if (surfaceImage) {
-            surfaceImage.image = NULL;
+    // First, try to handle as SHM buffer
+    if (shm_buffer) {
+        // Standard Wayland SHM buffer
+        width = wl_shm_buffer_get_width(shm_buffer);
+        height = wl_shm_buffer_get_height(shm_buffer);
+        stride = wl_shm_buffer_get_stride(shm_buffer);
+        format = wl_shm_buffer_get_format(shm_buffer);
+        
+        wl_shm_buffer_begin_access(shm_buffer);
+        data = wl_shm_buffer_get_data(shm_buffer);
+    } else {
+        // Not an SHM buffer - might be EGL buffer or custom buffer with buffer_data
+        buf_data = wl_resource_get_user_data(surface->buffer_resource);
+        
+        if (buf_data && buf_data->data) {
+            // Custom buffer with buffer_data (from wayland_shm.c)
+            width = buf_data->width;
+            height = buf_data->height;
+            stride = buf_data->stride;
+            format = buf_data->format;
+            data = (char *)buf_data->data + buf_data->offset;
+            
+            if ((uintptr_t)data < (uintptr_t)buf_data->data) {
+                NSLog(@"[RENDERER] ❌ Invalid data pointer calculation");
+                return;
+            }
+        } else {
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+            // Neither SHM buffer nor custom buffer_data - check if it's an EGL buffer
+            struct egl_buffer_handler *egl_handler = macos_compositor_get_egl_buffer_handler();
+            
+            if (egl_handler && egl_buffer_handler_is_egl_buffer(egl_handler, surface->buffer_resource)) {
+                // This is an EGL buffer - query its properties
+                int32_t egl_width, egl_height;
+                EGLint texture_format;
+                
+                if (egl_buffer_handler_query_buffer(egl_handler, surface->buffer_resource,
+                                                    &egl_width, &egl_height, &texture_format) == 0) {
+                    NSLog(@"[RENDERER] ✓ EGL buffer detected (size: %dx%d, format: %d)", egl_width, egl_height, texture_format);
+                    
+                    // For now, render a placeholder until we implement full EGL image rendering
+                    // TODO: Use eglCreateImageKHR and render the actual EGL image content
+                    int32_t placeholder_width = egl_width > 0 ? egl_width : (surface->width > 0 ? surface->width : 640);
+                    int32_t placeholder_height = egl_height > 0 ? egl_height : (surface->height > 0 ? surface->height : 480);
+                    int32_t placeholder_stride = placeholder_width * 4; // 32-bit RGBA
+                    size_t placeholder_size = placeholder_stride * placeholder_height;
+                    
+                    // Create a colored placeholder to indicate EGL buffer (blue tint)
+                    void *placeholder_data = calloc(1, placeholder_size);
+                    if (placeholder_data) {
+                        // Fill with blue-tinted pixels to indicate EGL buffer
+                        uint32_t *pixels = (uint32_t *)placeholder_data;
+                        for (int i = 0; i < placeholder_width * placeholder_height; i++) {
+                            pixels[i] = 0xFF3333AA; // Blue-tinted (RGBA)
+                        }
+                        
+                        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+                        CGBitmapInfo bitmapInfo = kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedLast;
+                        CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, placeholder_data, placeholder_size, NULL);
+                        CGImageRef placeholder_image = CGImageCreate(placeholder_width, placeholder_height, 8, 32, placeholder_stride,
+                                                                     colorSpace, bitmapInfo, provider, NULL, NO, kCGRenderingIntentDefault);
+                        
+                        if (placeholder_image) {
+                            NSNumber *key = [NSNumber numberWithUnsignedLongLong:(unsigned long long)surface];
+                            SurfaceImage *surfaceImage = self.surfaceImages[key];
+                            if (!surfaceImage) {
+                                surfaceImage = [[SurfaceImage alloc] init];
+                                surfaceImage.surface = surface;
+                                self.surfaceImages[key] = surfaceImage;
+                            }
+                            
+                            if (surfaceImage.image) {
+                                CGImageRelease(surfaceImage.image);
+                            }
+                            surfaceImage.image = CGImageRetain(placeholder_image);
+                            
+                            // Update surface dimensions
+                            surface->width = placeholder_width;
+                            surface->height = placeholder_height;
+                            surface->buffer_width = placeholder_width;
+                            surface->buffer_height = placeholder_height;
+                            
+                            CGFloat clampedWidth = (placeholder_width < maxWidth) ? placeholder_width : maxWidth;
+                            CGFloat clampedHeight = (placeholder_height < maxHeight) ? placeholder_height : maxHeight;
+                            surfaceImage.frame = CGRectMake(surface->x, surface->y, clampedWidth, clampedHeight);
+                            
+                            CGImageRelease(placeholder_image);
+                            CGDataProviderRelease(provider);
+                            CGColorSpaceRelease(colorSpace);
+                            free(placeholder_data);
+                            
+                            // Send buffer release to client
+                            if (!surface->buffer_release_sent) {
+                                struct wl_client *release_buffer_client = wl_resource_get_client(surface->buffer_resource);
+                                if (release_buffer_client) {
+                                    wl_buffer_send_release(surface->buffer_resource);
+                                    surface->buffer_release_sent = true;
+                                }
+                            }
+                            
+                            if (self.compositorView) {
+                                [self.compositorView setNeedsDisplay];
+                            }
+                            return;
+                        }
+                        
+                        CGDataProviderRelease(provider);
+                        CGColorSpaceRelease(colorSpace);
+                        free(placeholder_data);
+                    }
+                } else {
+                    NSLog(@"[RENDERER] ⚠️ EGL buffer detected but query failed");
+                }
+            } else {
+                // Not an EGL buffer - unknown buffer type
+                NSLog(@"[RENDERER] ⚠️ Unknown buffer type (not SHM, not custom, not EGL)");
+            }
+#endif // !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+            
+            // Fallback: send buffer release
+            if (!surface->buffer_release_sent) {
+                struct wl_client *release_buffer_client = wl_resource_get_client(surface->buffer_resource);
+                if (release_buffer_client) {
+                    wl_buffer_send_release(surface->buffer_resource);
+                    surface->buffer_release_sent = true;
+                }
+            }
+            return;
         }
-        if (self.compositorView) {
-            [self.compositorView setNeedsDisplay:YES];
-        }
-        return;
     }
     
-    width = buf_data->width;
-    height = buf_data->height;
-    stride = buf_data->stride;
-    format = buf_data->format;
-    data = (char *)buf_data->data + buf_data->offset;
-    
-    if ((uintptr_t)data < (uintptr_t)buf_data->data) {
-        NSLog(@"[RENDERER] ❌ Invalid data pointer calculation");
-        return;
-    }
-    
+    // Verify we have valid data
     if (!data) {
         if (shm_buffer) {
             wl_shm_buffer_end_access(shm_buffer);
         }
         if (self.compositorView) {
-            [self.compositorView setNeedsDisplay:YES];
+            [self.compositorView setNeedsDisplay];
         }
         return;
     }
@@ -320,10 +443,14 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
         // Clamp frame to compositor window bounds
         CGFloat clampedWidth = (width < maxWidth) ? width : maxWidth;
         CGFloat clampedHeight = (height < maxHeight) ? height : maxHeight;
-        NSRect newFrame = NSMakeRect(surface->x, surface->y, clampedWidth, clampedHeight);
+        CGRect newFrame = CGRectMake(surface->x, surface->y, clampedWidth, clampedHeight);
         
         // Only update frame if it changed (optimization)
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+        if (!CGRectEqualToRect(surfaceImage.frame, newFrame)) {
+#else
         if (!NSEqualRects(surfaceImage.frame, newFrame)) {
+#endif
             surfaceImage.frame = newFrame;
         }
         
@@ -334,16 +461,25 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
         
         // Release the buffer for this frame if we haven't already
         if (surface->buffer_resource && !surface->buffer_release_sent) {
-            struct buffer_data *release_data = wl_resource_get_user_data(surface->buffer_resource);
-            if (release_data != NULL) {
-                wl_buffer_send_release(surface->buffer_resource);
+            // CRITICAL: Verify the buffer resource is still valid before sending release
+            // If the client disconnected or buffer was destroyed, this could crash
+            struct wl_client *release_buffer_client = wl_resource_get_client(surface->buffer_resource);
+            if (release_buffer_client) {
+                // Buffer resource is still valid - safe to send release
+                struct buffer_data *release_data = wl_resource_get_user_data(surface->buffer_resource);
+                if (release_data != NULL) {
+                    wl_buffer_send_release(surface->buffer_resource);
+                }
+            } else {
+                // Buffer resource was destroyed (client disconnected) - just mark as released
+                NSLog(@"[RENDER] Buffer already destroyed (client disconnected) - skipping release");
             }
             surface->buffer_release_sent = true;
         }
         
         // Trigger redraw
         if (self.compositorView) {
-            [self.compositorView setNeedsDisplay:YES];
+            [self.compositorView setNeedsDisplay];
         }
     } else {
         NSLog(@"[RENDER] Failed to create CGImage from buffer data: width=%d, height=%d, stride=%d, format=0x%x",
@@ -367,12 +503,12 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
             surfaceImage.image = NULL;
         }
         if (self.compositorView) {
-            [self.compositorView setNeedsDisplay:YES];
+            [self.compositorView setNeedsDisplay];
         }
     }
 }
 
-- (void)drawSurfacesInRect:(NSRect)dirtyRect {
+- (void)drawSurfacesInRect:(CGRect)dirtyRect {
     // Draw all surfaces using CoreGraphics (like OWL compositor)
     // This is called from CompositorView's drawRect: method
     
@@ -381,6 +517,13 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
     }
     
     // Draw background
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    [[UIColor colorWithRed:0.1 green:0.1 blue:0.2 alpha:1.0] setFill];
+    UIRectFill(dirtyRect);
+    
+    // Get graphics context
+    CGContextRef cgContext = UIGraphicsGetCurrentContext();
+#else
     [[NSColor colorWithRed:0.1 green:0.1 blue:0.2 alpha:1.0] setFill];
     NSRectFill(dirtyRect);
     
@@ -391,6 +534,7 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
     }
     
     CGContextRef cgContext = [context CGContext];
+#endif
     if (!cgContext) {
         return;
     }
@@ -401,10 +545,14 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
             continue;
         }
         
-        NSRect frame = surfaceImage.frame;
+        CGRect frame = surfaceImage.frame;
         
         // Only draw if frame intersects dirty rect
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+        if (!CGRectIntersectsRect(frame, dirtyRect)) {
+#else
         if (!NSIntersectsRect(frame, dirtyRect)) {
+#endif
             continue;
         }
         

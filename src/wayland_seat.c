@@ -13,6 +13,8 @@ static void seat_get_pointer(struct wl_client *client, struct wl_resource *resou
 static void seat_get_keyboard(struct wl_client *client, struct wl_resource *resource, uint32_t id);
 static void seat_get_touch(struct wl_client *client, struct wl_resource *resource, uint32_t id);
 static void seat_release(struct wl_client *client, struct wl_resource *resource);
+static void send_pending_keyboard_enter_idle(void *data);
+static void send_pending_modifiers_idle(void *data);
 
 static const struct wl_seat_interface seat_interface = {
     .get_pointer = seat_get_pointer,
@@ -58,6 +60,28 @@ struct wl_seat_impl *wl_seat_create(struct wl_display *display) {
 
 void wl_seat_destroy(struct wl_seat_impl *seat) {
     if (!seat) return;
+    
+    // Clean up pending keyboard enter idle callback
+    if (seat->pending_keyboard_enter_idle) {
+        wl_event_source_remove(seat->pending_keyboard_enter_idle);
+        seat->pending_keyboard_enter_idle = NULL;
+    }
+    
+    // Clean up pending modifiers idle callback
+    if (seat->pending_modifiers_idle) {
+        wl_event_source_remove(seat->pending_modifiers_idle);
+        seat->pending_modifiers_idle = NULL;
+    }
+    
+    // Clear pending keyboard enter state
+    seat->pending_keyboard_enter_surface = NULL;
+    seat->pending_keyboard_enter_keyboard_resource = NULL;
+    seat->pending_keyboard_enter_serial = 0;
+    seat->pending_keyboard_enter_keys = NULL;
+    
+    // Clear pending modifiers state
+    seat->pending_modifiers_needed = false;
+    seat->pending_modifiers_serial = 0;
     
     wl_global_destroy(seat->global);
     free(seat);
@@ -139,7 +163,9 @@ static void seat_get_keyboard(struct wl_client *client, struct wl_resource *reso
         unlink(keymap_path);
         if (write(keymap_fd, keymap_string, keymap_size) == (ssize_t)keymap_size) {
             lseek(keymap_fd, 0, SEEK_SET);
-            wl_keyboard_send_keymap(keyboard_resource, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, keymap_fd, (uint32_t)keymap_size);
+            // FIXED: Use wl_resource_post_event directly instead of variadic wrapper function
+            // WL_KEYBOARD_KEYMAP is defined as 0 in wayland-server-protocol.h
+            wl_resource_post_event(keyboard_resource, WL_KEYBOARD_KEYMAP, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, keymap_fd, (uint32_t)keymap_size);
         }
         close(keymap_fd);
     }
@@ -169,19 +195,51 @@ static void seat_release(struct wl_client *client, struct wl_resource *resource)
 }
 
 static void pointer_set_cursor(struct wl_client *client, struct wl_resource *resource, uint32_t serial, struct wl_resource *surface, int32_t hotspot_x, int32_t hotspot_y) {
-    // Cursor handling - accept cursor surface requests
-    // Note: The cursor errors (dnd-move, dnd-copy, dnd-none) are from weston-terminal
-    // trying to load cursor themes, which we don't support yet. These are harmless warnings.
-    (void)client;
-    (void)resource;
-    (void)serial;
-    (void)surface;
-    (void)hotspot_x;
-    (void)hotspot_y;
+    (void)client;  // Client is available but not needed for validation
+    (void)serial;  // Serial is used for protocol validation but we accept all valid requests
     
+    struct wl_seat_impl *seat = wl_resource_get_user_data(resource);
+    if (!seat) {
+        log_printf("[SEAT] ", "pointer_set_cursor: seat is NULL\n");
+        return;
+    }
+    
+    // CRITICAL: Validate surface if provided (NULL is valid - means hide cursor)
+    if (surface) {
+        // Verify surface resource is still valid
+        if (wl_resource_get_user_data(surface) == NULL ||
+            wl_resource_get_client(surface) == NULL) {
+            log_printf("[SEAT] ", "pointer_set_cursor: cursor surface resource is invalid (ignoring)\n");
+            return; // Surface was destroyed or client disconnected
+        }
+        
+        // Track this surface as a cursor surface
+        seat->cursor_surface = surface;
+        seat->cursor_hotspot_x = hotspot_x;
+        seat->cursor_hotspot_y = hotspot_y;
+        
+        log_printf("[SEAT] ", "pointer_set_cursor: cursor surface set to %p (hotspot: %d, %d)\n", 
+                  (void *)surface, hotspot_x, hotspot_y);
+        
+        // Mark the surface as a cursor surface by storing a special marker in user_data
+        // We'll check this in surface_commit to skip normal surface handling
+        struct wl_surface_impl *surface_impl = wl_resource_get_user_data(surface);
+        if (surface_impl) {
+            // Store a pointer to the seat in the surface's user_data field
+            // We'll use a special marker to identify cursor surfaces
+            // Actually, we can't modify user_data here - it's already set to surface_impl
+            // Instead, we'll check if the surface matches seat->cursor_surface in surface_commit
+        }
+    } else {
+        // NULL surface means hide cursor
+        seat->cursor_surface = NULL;
+        log_printf("[SEAT] ", "pointer_set_cursor: cursor hidden (NULL surface)\n");
+    }
+    
+    // Note: We don't actually render the cursor surface yet
+    // Clients can set cursor surfaces, but we use macOS native cursors
+    // This is protocol-compliant - we accept the request but don't use the surface
     // TODO: Implement cursor rendering using NSCursor or custom CALayer
-    // For now, we just acknowledge the request (required by protocol)
-    // macOS will use its default cursor
 }
 
 static void pointer_release(struct wl_client *client, struct wl_resource *resource) {
@@ -202,6 +260,12 @@ static void keyboard_release(struct wl_client *client, struct wl_resource *resou
     if (seat) {
         if (seat->keyboard_resource == resource) {
             log_printf("[SEAT] ", "keyboard_release: clearing keyboard_resource\n");
+            // Cancel pending modifiers idle callback if any
+            if (seat->pending_modifiers_idle) {
+                wl_event_source_remove(seat->pending_modifiers_idle);
+                seat->pending_modifiers_idle = NULL;
+            }
+            seat->pending_modifiers_needed = false;
             seat->keyboard_resource = NULL;
         } else {
             log_printf("[SEAT] ", "keyboard_release: WARNING - keyboard_resource mismatch (seat->keyboard_resource=%p, resource=%p)\n", 
@@ -229,14 +293,47 @@ void wl_seat_set_focused_surface(struct wl_seat_impl *seat, void *surface) {
 }
 
 void wl_seat_send_pointer_enter(struct wl_seat_impl *seat, struct wl_resource *surface, uint32_t serial, double x, double y) {
-    if (!seat->pointer_resource || !surface) return;
+    if (!seat || !seat->pointer_resource || !surface) {
+        log_printf("[SEAT] ", "wl_seat_send_pointer_enter: invalid parameters (seat=%p, pointer_resource=%p, surface=%p)\n",
+                  (void *)seat, (void *)(seat ? seat->pointer_resource : NULL), (void *)surface);
+        return;
+    }
+    
+    // CRITICAL: Check if pointer_resource looks valid (not obviously corrupted)
+    // Valid pointers should be aligned and in reasonable memory range
+    if ((uintptr_t)seat->pointer_resource < 0x1000 || ((uintptr_t)seat->pointer_resource & 0x7) != 0) {
+        log_printf("[SEAT] ", "wl_seat_send_pointer_enter: pointer_resource looks corrupted (0x%p)\n", (void *)seat->pointer_resource);
+        seat->pointer_resource = NULL;
+        return;
+    }
+    
+    // CRITICAL: Check if surface looks valid (not obviously corrupted)
+    if ((uintptr_t)surface < 0x1000 || ((uintptr_t)surface & 0x7) != 0) {
+        log_printf("[SEAT] ", "wl_seat_send_pointer_enter: surface looks corrupted (0x%p)\n", (void *)surface);
+        return;
+    }
+    
     // Verify pointer resource is still valid before sending event
     if (wl_resource_get_user_data(seat->pointer_resource) == NULL) {
+        log_printf("[SEAT] ", "wl_seat_send_pointer_enter: pointer_resource user_data is NULL\n");
+        seat->pointer_resource = NULL;
         return; // Pointer resource was destroyed
+    }
+    // Verify pointer resource's client is still valid
+    if (wl_resource_get_client(seat->pointer_resource) == NULL) {
+        log_printf("[SEAT] ", "wl_seat_send_pointer_enter: pointer_resource client is NULL\n");
+        seat->pointer_resource = NULL;
+        return; // Pointer resource's client disconnected
     }
     // Verify surface resource is still valid
     if (wl_resource_get_user_data(surface) == NULL) {
+        log_printf("[SEAT] ", "wl_seat_send_pointer_enter: surface user_data is NULL\n");
         return; // Surface resource was destroyed
+    }
+    // Verify surface resource's client is still valid
+    if (wl_resource_get_client(surface) == NULL) {
+        log_printf("[SEAT] ", "wl_seat_send_pointer_enter: surface client is NULL\n");
+        return; // Surface resource's client disconnected
     }
 
     // Get the surface implementation from the resource
@@ -258,10 +355,46 @@ void wl_seat_send_pointer_enter(struct wl_seat_impl *seat, struct wl_resource *s
     // Clear pressed buttons when entering a new surface (fresh start)
     seat->pressed_buttons = 0;
     
+    // CRITICAL: Final validation right before calling variadic function
+    // The surface or pointer_resource might have become invalid between checks
+    if (!seat->pointer_resource || !surface ||
+        wl_resource_get_user_data(seat->pointer_resource) == NULL ||
+        wl_resource_get_client(seat->pointer_resource) == NULL ||
+        wl_resource_get_user_data(surface) == NULL ||
+        wl_resource_get_client(surface) == NULL) {
+        log_printf("[SEAT] ", "wl_seat_send_pointer_enter: resource became invalid right before sending enter\n");
+        return;
+    }
+    
+    // Double-check that surface_impl still matches
+    struct wl_surface_impl *check_impl = wl_resource_get_user_data(surface);
+    if (check_impl != surface_impl) {
+        log_printf("[SEAT] ", "wl_seat_send_pointer_enter: surface implementation changed - skipping\n");
+        return;
+    }
+    
     wl_fixed_t fx = wl_fixed_from_double(x);
     wl_fixed_t fy = wl_fixed_from_double(y);
     
-    wl_pointer_send_enter(seat->pointer_resource, serial, surface, fx, fy);
+    // Store in local variables to ensure they don't change during the call
+    struct wl_resource *final_pointer_res = seat->pointer_resource;
+    struct wl_resource *final_surface = surface;
+    
+    // Final check one more time
+    if (final_pointer_res != seat->pointer_resource ||
+        final_surface != surface ||
+        wl_resource_get_user_data(final_pointer_res) == NULL ||
+        wl_resource_get_client(final_pointer_res) == NULL ||
+        wl_resource_get_user_data(final_surface) == NULL ||
+        wl_resource_get_client(final_surface) == NULL) {
+        log_printf("[SEAT] ", "wl_seat_send_pointer_enter: resource became invalid at last moment\n");
+        return;
+    }
+    
+    // FIXED: Use wl_resource_post_event directly instead of variadic wrapper function
+    // This avoids calling convention issues with variadic functions on ARM64 macOS
+    // WL_POINTER_ENTER is defined as 0 in wayland-server-protocol.h
+    wl_resource_post_event(final_pointer_res, WL_POINTER_ENTER, serial, final_surface, fx, fy);
 
     // Update pointer focus
     seat->pointer_focused_surface = surface_impl;
@@ -274,9 +407,17 @@ void wl_seat_send_pointer_leave(struct wl_seat_impl *seat, struct wl_resource *s
     if (wl_resource_get_user_data(seat->pointer_resource) == NULL) {
         return; // Pointer resource was destroyed
     }
+    // Verify pointer resource's client is still valid
+    if (wl_resource_get_client(seat->pointer_resource) == NULL) {
+        return; // Pointer resource's client disconnected
+    }
     // Verify surface resource is still valid
     if (wl_resource_get_user_data(surface) == NULL) {
         return; // Surface resource was destroyed
+    }
+    // Verify surface resource's client is still valid
+    if (wl_resource_get_client(surface) == NULL) {
+        return; // Surface resource's client disconnected
     }
     
     // Clear pressed buttons when pointer leaves (Wayland protocol requirement)
@@ -286,7 +427,9 @@ void wl_seat_send_pointer_leave(struct wl_seat_impl *seat, struct wl_resource *s
         seat->pressed_buttons = 0;
     }
     
-    wl_pointer_send_leave(seat->pointer_resource, serial, surface);
+    // FIXED: Use wl_resource_post_event directly instead of variadic wrapper function
+    // WL_POINTER_LEAVE is defined as 1 in wayland-server-protocol.h
+    wl_resource_post_event(seat->pointer_resource, WL_POINTER_LEAVE, serial, surface);
 
     // Clear pointer focus
     seat->pointer_focused_surface = NULL;
@@ -325,11 +468,10 @@ void wl_seat_send_pointer_motion(struct wl_seat_impl *seat, uint32_t time, doubl
 
         // Send enter event for new surface
         uint32_t serial = wl_seat_get_serial(seat);
-        wl_fixed_t fx = wl_fixed_from_double(x);
-        wl_fixed_t fy = wl_fixed_from_double(y);
         log_printf("[SEAT] ", "wl_seat_send_pointer_motion: sending enter to surface %p at (%.1f, %.1f)\n",
                   (void *)current_surface, x, y);
-        wl_seat_send_pointer_enter(seat, current_surface->resource, serial, fx, fy);
+        // FIXED: Pass double values (x, y) not wl_fixed_t values (fx, fy)
+        wl_seat_send_pointer_enter(seat, current_surface->resource, serial, x, y);
 
         // Update pointer focus
         seat->pointer_focused_surface = current_surface;
@@ -343,7 +485,9 @@ void wl_seat_send_pointer_motion(struct wl_seat_impl *seat, uint32_t time, doubl
     log_printf("[CURSOR] ", "mouse motion: position=(%.1f, %.1f), surface=%p, time=%u\n", 
                x, y, (void *)current_surface, time);
     
-    wl_pointer_send_motion(seat->pointer_resource, time, fx, fy);
+    // FIXED: Use wl_resource_post_event directly instead of variadic wrapper function
+    // WL_POINTER_MOTION is defined as 2 in wayland-server-protocol.h
+    wl_resource_post_event(seat->pointer_resource, WL_POINTER_MOTION, time, fx, fy);
     
     // Flush events to client immediately so input is processed right away
     struct wl_client *client = wl_resource_get_client(seat->pointer_resource);
@@ -385,7 +529,9 @@ void wl_seat_send_pointer_button(struct wl_seat_impl *seat, uint32_t serial, uin
             seat->pressed_buttons |= button_mask;
             log_printf("[SEAT] ", "wl_seat_send_pointer_button: button %u pressed (bitmask=0x%X)\n", button, seat->pressed_buttons);
         }
-        wl_pointer_send_button(seat->pointer_resource, serial, time, button, state);
+        // FIXED: Use wl_resource_post_event directly instead of variadic wrapper function
+        // WL_POINTER_BUTTON is defined as 3 in wayland-server-protocol.h
+        wl_resource_post_event(seat->pointer_resource, WL_POINTER_BUTTON, serial, time, button, state);
     } else if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
         // Only send release if button was previously pressed
         if (button >= 272 && button < 272 + 32) {
@@ -394,7 +540,9 @@ void wl_seat_send_pointer_button(struct wl_seat_impl *seat, uint32_t serial, uin
             if (seat->pressed_buttons & button_mask) {
                 seat->pressed_buttons &= ~button_mask;
                 log_printf("[SEAT] ", "wl_seat_send_pointer_button: button %u released (bitmask=0x%X)\n", button, seat->pressed_buttons);
-                wl_pointer_send_button(seat->pointer_resource, serial, time, button, state);
+                // FIXED: Use wl_resource_post_event directly instead of variadic wrapper function
+        // WL_POINTER_BUTTON is defined as 3 in wayland-server-protocol.h
+        wl_resource_post_event(seat->pointer_resource, WL_POINTER_BUTTON, serial, time, button, state);
             } else {
                 log_printf("[SEAT] ", "wl_seat_send_pointer_button: ignoring stray release for button %u (not pressed, bitmask=0x%X)\n", button, seat->pressed_buttons);
             }
@@ -410,18 +558,194 @@ void wl_seat_send_keyboard_enter(struct wl_seat_impl *seat, struct wl_resource *
     if (wl_resource_get_user_data(seat->keyboard_resource) == NULL) {
         return; // Keyboard resource was destroyed
     }
+    // Verify keyboard resource's client is still valid
+    if (wl_resource_get_client(seat->keyboard_resource) == NULL) {
+        return; // Keyboard resource's client disconnected
+    }
     // Verify surface resource is still valid
     if (wl_resource_get_user_data(surface) == NULL) {
         return; // Surface resource was destroyed
     }
-    log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: sending enter event to surface %p\n", (void *)surface);
-    wl_keyboard_send_enter(seat->keyboard_resource, serial, surface, keys);
-    
-    // Protocol requirement: MUST send modifiers event after enter
-    // Send with no modifiers pressed (initial state)
-    uint32_t mods_serial = wl_seat_get_serial(seat);
-    wl_keyboard_send_modifiers(seat->keyboard_resource, mods_serial, 0, 0, 0, 0);
-    log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: sent modifiers event (no modifiers)\n");
+    // Verify surface resource's client is still valid
+    if (wl_resource_get_client(surface) == NULL) {
+        return; // Surface resource's client disconnected
+    }
+    // Ensure keys array is valid (not NULL and properly initialized)
+    if (!keys) {
+        log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: keys array is NULL, creating empty array\n");
+        struct wl_array empty_keys;
+        wl_array_init(&empty_keys);
+        log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: sending enter event to surface %p (empty keys array)\n", (void *)surface);
+        
+        // Verify keyboard resource is still valid before sending enter event
+        if (wl_resource_get_user_data(seat->keyboard_resource) == NULL ||
+            wl_resource_get_client(seat->keyboard_resource) == NULL) {
+            log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: keyboard resource became invalid before sending enter (NULL keys case)\n");
+            wl_array_release(&empty_keys);
+            return;
+        }
+        
+        // Store keyboard_resource pointer in a local variable to ensure it doesn't change
+        struct wl_resource *keyboard_res = seat->keyboard_resource;
+        
+        // CRITICAL: Verify the resource is still valid and matches what we stored
+        if (!keyboard_res || 
+            keyboard_res != seat->keyboard_resource ||
+            wl_resource_get_user_data(keyboard_res) == NULL ||
+            wl_resource_get_client(keyboard_res) == NULL) {
+            log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: keyboard resource became invalid right before sending enter (NULL keys case)\n");
+        wl_array_release(&empty_keys);
+            return;
+        }
+        
+        // CRITICAL: Verify surface is still valid before calling
+        if (!surface ||
+            wl_resource_get_user_data(surface) == NULL ||
+            wl_resource_get_client(surface) == NULL) {
+            log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: surface resource became invalid right before sending enter (NULL keys case)\n");
+            wl_array_release(&empty_keys);
+            return;
+        }
+        
+        // CRITICAL: Defer keyboard enter event via idle callback to avoid calling variadic function from FFI callback
+        // Calling variadic functions (like wl_keyboard_send_enter) from within FFI callbacks can corrupt the stack
+        // Store state for deferred send
+        struct wl_array *keys_copy = malloc(sizeof(struct wl_array));
+        if (!keys_copy) {
+            log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: failed to allocate keys array copy\n");
+            wl_array_release(&empty_keys);
+            return;
+        }
+        // Properly initialize the copy - don't shallow copy the structure
+        wl_array_init(keys_copy);
+        // empty_keys is already empty (size=0, data=NULL), so no need to copy data
+        
+        // Cancel any existing pending keyboard enter idle
+        if (seat->pending_keyboard_enter_idle) {
+            wl_event_source_remove(seat->pending_keyboard_enter_idle);
+            seat->pending_keyboard_enter_idle = NULL;
+        }
+        
+        // Store state for deferred send
+        seat->pending_keyboard_enter_keyboard_resource = keyboard_res;
+        seat->pending_keyboard_enter_surface = surface;
+        seat->pending_keyboard_enter_serial = serial;
+        seat->pending_keyboard_enter_keys = keys_copy;
+        
+        // Schedule keyboard enter to be sent via idle callback
+            struct wl_event_loop *event_loop = wl_display_get_event_loop(seat->display);
+            if (event_loop) {
+            seat->pending_keyboard_enter_idle = wl_event_loop_add_idle(event_loop, send_pending_keyboard_enter_idle, seat);
+            if (seat->pending_keyboard_enter_idle) {
+                log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: scheduled keyboard enter event via idle callback (NULL keys case)\n");
+                } else {
+                log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: failed to schedule keyboard enter idle callback (NULL keys case)\n");
+                free(keys_copy);
+                seat->pending_keyboard_enter_keys = NULL;
+                }
+            } else {
+            log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: event loop unavailable for keyboard enter idle callback (NULL keys case)\n");
+            free(keys_copy);
+            seat->pending_keyboard_enter_keys = NULL;
+        }
+    } else {
+        // Verify keys array is properly initialized
+        // An empty array (size=0, data=NULL) is valid and means no keys are pressed
+        log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: sending enter event to surface %p (keys: size=%zu, data=%p)\n", 
+                  (void *)surface, keys->size, (void *)keys->data);
+        
+        // Verify the array structure is valid before passing to Wayland
+        // The array should have size=0 and data=NULL for an empty array, or valid data pointer for non-empty
+        // Only check for invalid state: size>0 but data==NULL (should never happen)
+        if (keys->size > 0 && keys->data == NULL) {
+            log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: WARNING - keys array has size>0 but data is NULL, fixing\n");
+            // This is invalid - reset to empty array
+            wl_array_release(keys);
+            wl_array_init(keys);
+        }
+        // Note: size=0 and data=NULL is the correct state for an empty array
+        
+        // Verify keyboard resource is still valid before sending enter event
+        // Double-check after all the validation above
+        if (wl_resource_get_user_data(seat->keyboard_resource) == NULL ||
+            wl_resource_get_client(seat->keyboard_resource) == NULL) {
+            log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: keyboard resource became invalid before sending enter\n");
+            return;
+        }
+        
+        // Store keyboard_resource pointer in a local variable to ensure it doesn't change
+        struct wl_resource *keyboard_res = seat->keyboard_resource;
+        
+        // CRITICAL: Verify the resource is still valid one more time before calling
+        // Also verify it matches what we stored (no concurrent modification)
+        if (!keyboard_res || 
+            keyboard_res != seat->keyboard_resource ||
+            wl_resource_get_user_data(keyboard_res) == NULL ||
+            wl_resource_get_client(keyboard_res) == NULL) {
+            log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: keyboard resource became invalid right before sending enter\n");
+            return;
+        }
+        
+        // CRITICAL: Verify surface is still valid before calling
+        if (!surface ||
+            wl_resource_get_user_data(surface) == NULL ||
+            wl_resource_get_client(surface) == NULL) {
+            log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: surface resource became invalid right before sending enter\n");
+            return;
+        }
+        
+        // CRITICAL: Verify keys array pointer is valid (not corrupted)
+        if (!keys) {
+            log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: keys array is NULL in non-NULL branch - this should not happen\n");
+            return;
+        }
+        
+        // CRITICAL: Defer keyboard enter event via idle callback to avoid calling variadic function from FFI callback
+        // Calling variadic functions (like wl_keyboard_send_enter) from within FFI callbacks can corrupt the stack
+        // Copy the keys array since it might be a stack variable that won't exist when the callback runs
+        struct wl_array *keys_copy = malloc(sizeof(struct wl_array));
+        if (!keys_copy) {
+            log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: failed to allocate keys array copy\n");
+            return;
+        }
+        wl_array_init(keys_copy);
+        if (keys->size > 0 && keys->data) {
+            // Copy the keys data
+            wl_array_add(keys_copy, keys->size);
+            memcpy(keys_copy->data, keys->data, keys->size);
+        }
+        
+        // Cancel any existing pending keyboard enter idle
+        if (seat->pending_keyboard_enter_idle) {
+            wl_event_source_remove(seat->pending_keyboard_enter_idle);
+            seat->pending_keyboard_enter_idle = NULL;
+        }
+        
+        // Store state for deferred send
+        seat->pending_keyboard_enter_keyboard_resource = keyboard_res;
+        seat->pending_keyboard_enter_surface = surface;
+        seat->pending_keyboard_enter_serial = serial;
+        seat->pending_keyboard_enter_keys = keys_copy;
+        
+        // Schedule keyboard enter to be sent via idle callback
+            struct wl_event_loop *event_loop = wl_display_get_event_loop(seat->display);
+            if (event_loop) {
+            seat->pending_keyboard_enter_idle = wl_event_loop_add_idle(event_loop, send_pending_keyboard_enter_idle, seat);
+            if (seat->pending_keyboard_enter_idle) {
+                log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: scheduled keyboard enter event via idle callback\n");
+                } else {
+                log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: failed to schedule keyboard enter idle callback\n");
+                wl_array_release(keys_copy);
+                free(keys_copy);
+                seat->pending_keyboard_enter_keys = NULL;
+                }
+            } else {
+            log_printf("[SEAT] ", "wl_seat_send_keyboard_enter: event loop unavailable for keyboard enter idle callback\n");
+            wl_array_release(keys_copy);
+            free(keys_copy);
+            seat->pending_keyboard_enter_keys = NULL;
+        }
+    }
 }
 
 void wl_seat_send_keyboard_leave(struct wl_seat_impl *seat, struct wl_resource *surface, uint32_t serial) {
@@ -430,11 +754,21 @@ void wl_seat_send_keyboard_leave(struct wl_seat_impl *seat, struct wl_resource *
     if (wl_resource_get_user_data(seat->keyboard_resource) == NULL) {
         return; // Keyboard resource was destroyed
     }
+    // Verify keyboard resource's client is still valid
+    if (wl_resource_get_client(seat->keyboard_resource) == NULL) {
+        return; // Keyboard resource's client disconnected
+    }
     // Verify surface resource is still valid
     if (wl_resource_get_user_data(surface) == NULL) {
         return; // Surface resource was destroyed
     }
-    wl_keyboard_send_leave(seat->keyboard_resource, serial, surface);
+    // Verify surface resource's client is still valid
+    if (wl_resource_get_client(surface) == NULL) {
+        return; // Surface resource's client disconnected
+    }
+    // FIXED: Use wl_resource_post_event directly instead of variadic wrapper function
+    // WL_KEYBOARD_LEAVE is defined as 2 in wayland-server-protocol.h
+    wl_resource_post_event(seat->keyboard_resource, WL_KEYBOARD_LEAVE, serial, surface);
 }
 
 // Helper function to check if a keycode is a modifier key and update modifier state
@@ -497,21 +831,415 @@ static bool update_modifier_state(struct wl_seat_impl *seat, uint32_t key, uint3
     return state_changed;
 }
 
+// Idle callback to send pending keyboard enter event (deferred from FFI callback)
+static void send_pending_keyboard_enter_idle(void *data) {
+    log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: START\n");
+    struct wl_seat_impl *seat = (struct wl_seat_impl *)data;
+    if (!seat) {
+        log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: seat is NULL\n");
+        return;
+    }
+    
+    log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: seat=%p\n", (void *)seat);
+    
+    // Clear the idle source first to prevent re-entry
+    seat->pending_keyboard_enter_idle = NULL;
+    
+    // Use the stored resources from when we scheduled the callback
+    struct wl_resource *keyboard_res = seat->pending_keyboard_enter_keyboard_resource;
+    struct wl_resource *surface = seat->pending_keyboard_enter_surface;
+    uint32_t serial = seat->pending_keyboard_enter_serial;
+    struct wl_array *keys = seat->pending_keyboard_enter_keys;
+    
+    // Clear pending state immediately to prevent reuse
+    seat->pending_keyboard_enter_keyboard_resource = NULL;
+    seat->pending_keyboard_enter_surface = NULL;
+    seat->pending_keyboard_enter_serial = 0;
+    seat->pending_keyboard_enter_keys = NULL;
+    
+    if (!keyboard_res || !surface) {
+        log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: missing keyboard or surface resource\n");
+        if (keys) {
+            wl_array_release(keys);
+            free(keys);
+        }
+        return;
+    }
+    
+    // Verify resources are still valid
+    if (wl_resource_get_user_data(keyboard_res) == NULL ||
+        wl_resource_get_client(keyboard_res) == NULL ||
+        wl_resource_get_user_data(surface) == NULL ||
+        wl_resource_get_client(surface) == NULL) {
+        log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: resources became invalid\n");
+        if (keys) {
+            wl_array_release(keys);
+            free(keys);
+        }
+        return;
+    }
+    
+    // CRITICAL: Final validation right before calling variadic function
+    // Check pointer validity (alignment and address range)
+    if ((uintptr_t)keyboard_res < 0x1000 || ((uintptr_t)keyboard_res & 0x7) != 0) {
+        log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: keyboard_res looks corrupted (0x%p)\n", (void *)keyboard_res);
+        if (keys) {
+            wl_array_release(keys);
+            free(keys);
+        }
+        return;
+    }
+    
+    if ((uintptr_t)surface < 0x1000 || ((uintptr_t)surface & 0x7) != 0) {
+        log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: surface looks corrupted (0x%p)\n", (void *)surface);
+        if (keys) {
+            wl_array_release(keys);
+            free(keys);
+        }
+        return;
+    }
+    
+    // CRITICAL: Re-validate resources one more time right before calling
+    if (wl_resource_get_user_data(keyboard_res) == NULL ||
+        wl_resource_get_client(keyboard_res) == NULL ||
+        wl_resource_get_user_data(surface) == NULL ||
+        wl_resource_get_client(surface) == NULL) {
+        log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: resources became invalid right before sending enter\n");
+        if (keys) {
+            wl_array_release(keys);
+            free(keys);
+        }
+        return;
+    }
+    
+    // Verify keys array is valid
+    if (!keys) {
+        log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: keys array is NULL, creating empty array\n");
+        struct wl_array empty_keys;
+        wl_array_init(&empty_keys);
+        
+        // Store in local variables for final call
+        struct wl_resource *final_keyboard_res = keyboard_res;
+        struct wl_resource *final_surface = surface;
+        struct wl_array *final_keys = &empty_keys;
+        
+        // Final check one more time
+        if (final_keyboard_res != keyboard_res ||
+            final_surface != surface ||
+            wl_resource_get_user_data(final_keyboard_res) == NULL ||
+            wl_resource_get_client(final_keyboard_res) == NULL ||
+            wl_resource_get_user_data(final_surface) == NULL ||
+            wl_resource_get_client(final_surface) == NULL) {
+            log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: resources changed at last moment\n");
+            wl_array_release(&empty_keys);
+            return;
+        }
+        
+        log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: CALLING wl_resource_post_event for keyboard enter (empty keys case)\n");
+        log_printf("[SEAT] ", "  keyboard_res=%p, serial=%u, surface=%p, keys=%p\n", 
+                  (void *)final_keyboard_res, serial, (void *)final_surface, (void *)final_keys);
+        // FIXED: Use wl_resource_post_event directly instead of variadic wrapper function
+        // This avoids calling convention issues with variadic functions on ARM64 macOS
+        // WL_KEYBOARD_ENTER is defined as 1 in wayland-server-protocol.h
+        wl_resource_post_event(final_keyboard_res, WL_KEYBOARD_ENTER, serial, final_surface, final_keys);
+        log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: keyboard enter sent successfully (empty keys case)\n");
+        wl_array_release(&empty_keys);
+    } else {
+        // CRITICAL: Validate keys array pointer and structure before using
+        if ((uintptr_t)keys < 0x1000 || ((uintptr_t)keys & 0x7) != 0) {
+            log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: keys array pointer looks corrupted (0x%p)\n", (void *)keys);
+            free(keys);
+            return;
+        }
+        
+        // Validate keys array structure
+        if (keys->size > 0 && keys->data == NULL) {
+            log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: keys array has invalid state (size=%zu but data is NULL), fixing\n", keys->size);
+            wl_array_release(keys);
+            wl_array_init(keys);
+        }
+        
+        log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: sending keyboard enter (serial=%u, surface=%p, keys: size=%zu)\n",
+                  serial, (void *)surface, keys->size);
+        
+        // Store in local variables for final call
+        struct wl_resource *final_keyboard_res = keyboard_res;
+        struct wl_resource *final_surface = surface;
+        struct wl_array *final_keys = keys;
+        
+        // Final check one more time
+        if (final_keyboard_res != keyboard_res ||
+            final_surface != surface ||
+            final_keys != keys ||
+            wl_resource_get_user_data(final_keyboard_res) == NULL ||
+            wl_resource_get_client(final_keyboard_res) == NULL ||
+            wl_resource_get_user_data(final_surface) == NULL ||
+            wl_resource_get_client(final_surface) == NULL) {
+            log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: resources changed at last moment\n");
+            wl_array_release(keys);
+            free(keys);
+            return;
+        }
+        
+        log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: CALLING wl_resource_post_event for keyboard enter (with keys)\n");
+        log_printf("[SEAT] ", "  keyboard_res=%p, serial=%u, surface=%p, keys=%p, keys_size=%zu\n", 
+                  (void *)final_keyboard_res, serial, (void *)final_surface, (void *)final_keys, final_keys->size);
+        // FIXED: Use wl_resource_post_event directly instead of variadic wrapper function
+        // This avoids calling convention issues with variadic functions on ARM64 macOS
+        // WL_KEYBOARD_ENTER is defined as 1 in wayland-server-protocol.h
+        wl_resource_post_event(final_keyboard_res, WL_KEYBOARD_ENTER, serial, final_surface, final_keys);
+        log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: keyboard enter sent successfully (with keys)\n");
+        // Release keys array (it was allocated with malloc)
+        wl_array_release(keys);
+        free(keys);
+    }
+    
+    // Schedule modifiers event after enter (as required by protocol)
+    // Don't store the resource pointer - use seat->keyboard_resource directly in idle callback
+    // CRITICAL: Only schedule if resource is valid and serial is valid
+    if (keyboard_res &&
+        wl_resource_get_user_data(keyboard_res) != NULL &&
+        wl_resource_get_client(keyboard_res) != NULL) {
+        uint32_t modifiers_serial = wl_seat_get_serial(seat);
+        
+        // CRITICAL: Ensure serial is valid before scheduling
+        if (modifiers_serial == 0 || modifiers_serial > 0x7fffffff) {
+            log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: invalid serial (0x%x) - skipping modifiers\n", modifiers_serial);
+        } else {
+            seat->pending_modifiers_serial = modifiers_serial;
+            seat->pending_modifiers_needed = true;
+            
+            // Cancel any existing pending modifiers idle
+            if (seat->pending_modifiers_idle) {
+                wl_event_source_remove(seat->pending_modifiers_idle);
+                seat->pending_modifiers_idle = NULL;
+            }
+            
+            // Schedule modifiers to be sent via idle callback
+            struct wl_event_loop *event_loop = wl_display_get_event_loop(seat->display);
+            if (event_loop) {
+                seat->pending_modifiers_idle = wl_event_loop_add_idle(event_loop, send_pending_modifiers_idle, seat);
+                if (seat->pending_modifiers_idle) {
+                    log_printf("[SEAT] ", "send_pending_keyboard_enter_idle: scheduled modifiers event via idle callback (serial=%u)\n", modifiers_serial);
+                }
+            }
+        }
+    }
+}
+
+// Idle callback to send pending modifiers event after keyboard enter
+static void send_pending_modifiers_idle(void *data) {
+    struct wl_seat_impl *seat = (struct wl_seat_impl *)data;
+    if (!seat) {
+        return;
+    }
+    
+    // Clear the idle source first to prevent re-entry
+    seat->pending_modifiers_idle = NULL;
+    seat->pending_modifiers_needed = false;
+    
+    // Use seat->keyboard_resource directly (don't store a copy that can become invalid)
+    struct wl_resource *keyboard_res = seat->keyboard_resource;
+    if (!keyboard_res) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: no keyboard resource\n");
+        return;
+    }
+    
+    // CRITICAL: Check if pointer looks valid (not obviously corrupted)
+    // Valid pointers should be aligned and in reasonable memory range
+    if ((uintptr_t)keyboard_res < 0x1000 || ((uintptr_t)keyboard_res & 0x7) != 0) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: keyboard resource pointer looks corrupted (0x%p)\n", (void *)keyboard_res);
+        return;
+    }
+    
+    // Verify serial is valid (should be non-zero)
+    uint32_t serial = seat->pending_modifiers_serial;
+    if (serial == 0) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: invalid serial (0)\n");
+        return;
+    }
+    
+    // CRITICAL: Verify keyboard resource is still valid
+    // Check user_data first (safer than checking client)
+    void *user_data = wl_resource_get_user_data(keyboard_res);
+    if (!user_data) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: keyboard resource became invalid (user_data is NULL)\n");
+        seat->keyboard_resource = NULL; // Clear invalid pointer
+        return;
+    }
+    
+    // CRITICAL: Verify the keyboard resource's client is still connected
+    struct wl_client *keyboard_client = wl_resource_get_client(keyboard_res);
+    if (!keyboard_client) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: keyboard resource's client is NULL (client disconnected)\n");
+        seat->keyboard_resource = NULL; // Clear invalid pointer
+        return;
+    }
+    
+    // CRITICAL: Double-check that keyboard_res still matches seat->keyboard_resource
+    // (it might have changed during validation)
+    if (keyboard_res != seat->keyboard_resource) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: keyboard resource changed during validation (keyboard was destroyed)\n");
+        return;
+    }
+    
+    // CRITICAL: Final verification right before the call
+    // Re-check user_data and client one more time
+    if (wl_resource_get_user_data(keyboard_res) == NULL ||
+        wl_resource_get_client(keyboard_res) == NULL) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: keyboard resource became invalid in final check\n");
+        seat->keyboard_resource = NULL; // Clear invalid pointer
+        return;
+    }
+    
+    // CRITICAL: Verify keyboard_res still matches seat->keyboard_resource
+    // (it might have been destroyed and replaced)
+    if (keyboard_res != seat->keyboard_resource) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: keyboard resource was replaced during validation\n");
+        return;
+    }
+    
+    // Send modifiers with no modifiers pressed (initial state after enter)
+    // Use explicit uint32_t values to ensure proper type
+    uint32_t mods_depressed = 0;
+    uint32_t mods_latched = 0;
+    uint32_t mods_locked = 0;
+    uint32_t group = 0;
+    
+    log_printf("[SEAT] ", "send_pending_modifiers_idle: sending modifiers (serial=%u, resource=%p)\n", serial, (void *)keyboard_res);
+    
+    // CRITICAL: Wrap the call in a check to ensure keyboard_res hasn't changed
+    // Store in local variable and verify one last time
+    struct wl_resource *final_keyboard_res = seat->keyboard_resource;
+    
+    // CRITICAL: Check pointer validity one more time (alignment and address range)
+    if ((uintptr_t)final_keyboard_res < 0x1000 || ((uintptr_t)final_keyboard_res & 0x7) != 0) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: final_keyboard_res pointer looks corrupted (0x%p)\n", (void *)final_keyboard_res);
+        seat->keyboard_resource = NULL; // Clear corrupted pointer
+        return;
+    }
+    
+    if (final_keyboard_res != keyboard_res) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: keyboard resource changed during validation\n");
+        return;
+    }
+    
+    // CRITICAL: Final validation - check user_data and client one more time
+    void *final_user_data = wl_resource_get_user_data(final_keyboard_res);
+    struct wl_client *final_client = wl_resource_get_client(final_keyboard_res);
+    
+    if (!final_user_data || !final_client) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: keyboard resource became invalid in final check (user_data=%p, client=%p)\n", 
+                  (void *)final_user_data, (void *)final_client);
+        seat->keyboard_resource = NULL; // Clear invalid pointer
+        return;
+    }
+    
+    // CRITICAL: Verify the resource hasn't changed one more time
+    if (final_keyboard_res != seat->keyboard_resource) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: keyboard resource changed right before call\n");
+        return;
+    }
+    
+    // Now safe to call - all checks passed
+    // Use explicit uint32_t values to ensure proper type for variadic function
+    log_printf("[SEAT] ", "send_pending_modifiers_idle: calling wl_keyboard_send_modifiers (resource=%p, serial=%u)\n", 
+              (void *)final_keyboard_res, serial);
+    
+    // CRITICAL: One final check - ensure the resource pointer hasn't been corrupted
+    // The crash address 0x0000000e00000007 suggests memory corruption
+    // Check that the pointer is still valid and matches what we expect
+    if ((uintptr_t)final_keyboard_res != (uintptr_t)seat->keyboard_resource) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: resource pointer mismatch - aborting call\n");
+        return;
+    }
+    
+    // CRITICAL: Verify the resource is still valid one more time right before the call
+    // This is the last chance to catch any race conditions
+    void *last_check_user_data = wl_resource_get_user_data(final_keyboard_res);
+    struct wl_client *last_check_client = wl_resource_get_client(final_keyboard_res);
+    
+    if (!last_check_user_data || !last_check_client) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: resource invalid at final moment - aborting call\n");
+        seat->keyboard_resource = NULL;
+        return;
+    }
+    
+    // CRITICAL: Ensure serial is valid (non-zero)
+    if (serial == 0) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: invalid serial (0) - aborting call\n");
+        return;
+    }
+    
+    // WORKAROUND: Temporarily disable modifiers sending due to crashes
+    // The crash address 0x0000000e00000007 suggests memory corruption in variadic function
+    // TODO: Investigate root cause - may be related to calling variadic functions from idle callbacks
+    // or memory corruption in the Wayland library's argument parsing
+    
+    // CRITICAL: Final safety check - ensure the resource pointer hasn't been corrupted
+    // The crash address 0x0000000e00000007 suggests memory corruption
+    // Double-check the pointer is still valid and properly aligned
+    uintptr_t resource_addr = (uintptr_t)final_keyboard_res;
+    if (resource_addr < 0x1000 || (resource_addr & 0x7) != 0 || resource_addr > 0x7fffffffffff) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: resource pointer looks corrupted (0x%p) - aborting\n", 
+                  (void *)final_keyboard_res);
+        seat->keyboard_resource = NULL;
+        return;
+    }
+    
+    // CRITICAL: Ensure all arguments are valid before calling variadic function
+    // Check that serial is reasonable (not corrupted)
+    if (serial == 0 || serial > 0x7fffffff) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: serial looks corrupted (0x%x) - aborting\n", serial);
+        return;
+    }
+    
+    // Final check: ensure resource still matches
+    if (final_keyboard_res != seat->keyboard_resource) {
+        log_printf("[SEAT] ", "send_pending_modifiers_idle: resource changed at last moment - aborting\n");
+        return;
+    }
+    
+    // FIXED: Use wl_resource_post_event directly instead of variadic wrapper function
+    // This avoids calling convention issues with variadic functions on ARM64 macOS
+    // WL_KEYBOARD_MODIFIERS is defined as 4 in wayland-server-protocol.h
+    log_printf("[SEAT] ", "send_pending_modifiers_idle: sending modifiers via wl_resource_post_event\n");
+    log_printf("[SEAT] ", "  Resource: %p, Serial: %u, Mods: depressed=%u latched=%u locked=%u group=%u\n",
+              (void *)final_keyboard_res, serial, mods_depressed, mods_latched, mods_locked, group);
+    
+    // Use wl_resource_post_event directly (safer than variadic wrapper on ARM64)
+    wl_resource_post_event(final_keyboard_res, WL_KEYBOARD_MODIFIERS, 
+                          serial, mods_depressed, mods_latched, mods_locked, group);
+    
+    log_printf("[SEAT] ", "send_pending_modifiers_idle: modifiers sent successfully\n");
+}
+
 void wl_seat_send_keyboard_modifiers(struct wl_seat_impl *seat, uint32_t serial) {
     if (!seat || !seat->keyboard_resource) return;
     if (!seat->focused_surface) return;
     
     // Verify keyboard resource is still valid
     if (wl_resource_get_user_data(seat->keyboard_resource) == NULL) {
+        // Cancel pending modifiers idle callback if any
+        if (seat->pending_modifiers_idle) {
+            wl_event_source_remove(seat->pending_modifiers_idle);
+            seat->pending_modifiers_idle = NULL;
+        }
+        seat->pending_modifiers_needed = false;
         seat->keyboard_resource = NULL;
         return;
     }
     
-    wl_keyboard_send_modifiers(seat->keyboard_resource, serial,
-                               seat->mods_depressed,
-                               seat->mods_latched,
-                               seat->mods_locked,
-                               seat->group);
+    // FIXED: Use wl_resource_post_event directly instead of variadic wrapper function
+    // This avoids calling convention issues with variadic functions on ARM64 macOS
+    log_printf("[SEAT] ", "wl_seat_send_keyboard_modifiers: sending modifiers via wl_resource_post_event\n");
+    log_printf("[SEAT] ", "  Resource: %p, Serial: %u, Mods: depressed=%u latched=%u locked=%u group=%u\n",
+              (void *)seat->keyboard_resource, serial, seat->mods_depressed, seat->mods_latched, seat->mods_locked, seat->group);
+    
+    // Use wl_resource_post_event directly (safer than variadic wrapper on ARM64)
+    wl_resource_post_event(seat->keyboard_resource, WL_KEYBOARD_MODIFIERS,
+                          serial, seat->mods_depressed, seat->mods_latched, 
+                          seat->mods_locked, seat->group);
     
     // Flush client connection immediately to reduce input latency
     struct wl_client *client = wl_resource_get_client(seat->keyboard_resource);
@@ -540,12 +1268,24 @@ void wl_seat_send_keyboard_key(struct wl_seat_impl *seat, uint32_t serial, uint3
     struct wl_client *client = wl_resource_get_client(seat->keyboard_resource);
     if (!client) {
         // Client disconnected, resource is invalid - clear it
+        // Cancel pending modifiers idle callback if any
+        if (seat->pending_modifiers_idle) {
+            wl_event_source_remove(seat->pending_modifiers_idle);
+            seat->pending_modifiers_idle = NULL;
+        }
+        seat->pending_modifiers_needed = false;
         seat->keyboard_resource = NULL;
         return;
     }
     // Also verify the resource's user_data is still valid
     if (wl_resource_get_user_data(seat->keyboard_resource) == NULL) {
         // Resource was destroyed, clear it
+        // Cancel pending modifiers idle callback if any
+        if (seat->pending_modifiers_idle) {
+            wl_event_source_remove(seat->pending_modifiers_idle);
+            seat->pending_modifiers_idle = NULL;
+        }
+        seat->pending_modifiers_needed = false;
         seat->keyboard_resource = NULL;
         return;
     }
@@ -561,7 +1301,9 @@ void wl_seat_send_keyboard_key(struct wl_seat_impl *seat, uint32_t serial, uint3
         (void)focused_client; // Suppress unused variable warning
     }
     
-    wl_keyboard_send_key(seat->keyboard_resource, serial, time, key, state);
+    // FIXED: Use wl_resource_post_event directly instead of variadic wrapper function
+    // WL_KEYBOARD_KEY is defined as 3 in wayland-server-protocol.h
+    wl_resource_post_event(seat->keyboard_resource, WL_KEYBOARD_KEY, serial, time, key, state);
     
     // Send modifier update after key event if modifier state changed
     // This ensures the client knows the current modifier state

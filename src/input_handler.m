@@ -9,6 +9,7 @@
 // Linux keycodes: Q=16, W=17, E=18, R=19, T=20, Y=21, U=22, I=23, O=24, P=25
 //                  A=30, S=31, D=32, F=33, G=34, H=35, J=36, K=37, L=38
 //                  Z=44, X=45, C=46, V=47, B=48, N=49, M=50
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 static uint32_t macKeyCodeToLinuxKeyCode(unsigned short macKeyCode) {
     // Basic mapping - can be expanded
     switch (macKeyCode) {
@@ -144,8 +145,10 @@ static uint32_t macKeyCodeToLinuxKeyCode(unsigned short macKeyCode) {
         default: return 0; // Unknown - will be handled via charactersIgnoringModifiers
     }
 }
+#endif
 
 // Mouse button mapping
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 static uint32_t macButtonToWaylandButton(NSEventType eventType, NSEvent *event) {
     (void)event; // eventType is sufficient for button mapping
     switch (eventType) {
@@ -162,10 +165,15 @@ static uint32_t macButtonToWaylandButton(NSEventType eventType, NSEvent *event) 
             return 0;
     }
 }
+#endif
 
 @implementation InputHandler
 
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+- (instancetype)initWithSeat:(struct wl_seat_impl *)seat window:(UIWindow *)window compositor:(id)compositor {
+#else
 - (instancetype)initWithSeat:(struct wl_seat_impl *)seat window:(NSWindow *)window compositor:(id)compositor {
+#endif
     self = [super init];
     if (self) {
         _seat = seat;
@@ -176,6 +184,10 @@ static uint32_t macButtonToWaylandButton(NSEventType eventType, NSEvent *event) 
 }
 
 - (void)setupInputHandling {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    // iOS: Touch events handled via gesture recognizers
+    (void)_window;
+#else
     // Set up event monitoring for the window
     NSTrackingArea *trackingArea = [[NSTrackingArea alloc] initWithRect:[_window.contentView bounds]
                                                                 options:(NSTrackingMouseMoved | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect)
@@ -185,8 +197,10 @@ static uint32_t macButtonToWaylandButton(NSEventType eventType, NSEvent *event) 
     
     // Make window accept mouse events
     [_window setAcceptsMouseMovedEvents:YES];
+#endif
 }
 
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 - (void)handleMouseEvent:(NSEvent *)event {
     if (!_seat) return;
     
@@ -256,7 +270,9 @@ static uint32_t macButtonToWaylandButton(NSEventType eventType, NSEvent *event) 
             break;
     }
 }
+#endif
 
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 #pragma mark - NSResponder forwarding
 
 - (void)mouseMoved:(NSEvent *)event {
@@ -302,6 +318,7 @@ static uint32_t macButtonToWaylandButton(NSEventType eventType, NSEvent *event) 
 - (void)scrollWheel:(NSEvent *)event {
     [self handleMouseEvent:event];
 }
+#endif
 
 // Trigger frame callback and refresh - used for mouse/pointer events
 - (void)triggerFrameCallback {
@@ -312,11 +329,19 @@ static uint32_t macButtonToWaylandButton(NSEventType eventType, NSEvent *event) 
 
 // Trigger redraw after input events so UI updates are visible immediately
 - (void)triggerRedraw {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    if (!_window || !_window.rootViewController.view) {
+#else
     if (!_window || !_window.contentView) {
+#endif
         return;
     }
     
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    UIView *contentView = _window.rootViewController.view;
+#else
     NSView *contentView = _window.contentView;
+#endif
     
     // Check if this is a CompositorView with Metal view
     if ([contentView respondsToSelector:@selector(metalView)]) {
@@ -327,15 +352,25 @@ static uint32_t macButtonToWaylandButton(NSEventType eventType, NSEvent *event) 
             // The continuous rendering will handle regular updates, but mouse movement
             // should trigger immediate redraw for cursor updates
             dispatch_async(dispatch_get_main_queue(), ^{
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+                if ([metalView respondsToSelector:@selector(setNeedsDisplay)]) {
+                    [metalView performSelector:@selector(setNeedsDisplay)];
+                }
+#else
                 if ([metalView respondsToSelector:@selector(setNeedsDisplay:)]) {
                     [metalView performSelector:@selector(setNeedsDisplay:) withObject:@YES];
                 }
+#endif
             });
         }
     } else {
         // Fallback: trigger regular view redraw
         dispatch_async(dispatch_get_main_queue(), ^{
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+            [contentView setNeedsDisplay];
+#else
             [contentView setNeedsDisplay:YES];
+#endif
         });
     }
     
@@ -367,6 +402,7 @@ static uint32_t macButtonToWaylandButton(NSEventType eventType, NSEvent *event) 
     }
 }
 
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 - (void)handleKeyboardEvent:(NSEvent *)event {
     if (!_seat) return;
 
@@ -387,9 +423,15 @@ static uint32_t macButtonToWaylandButton(NSEventType eventType, NSEvent *event) 
     // This ensures function keys, numpad, and special keys work correctly
     linuxKeyCode = macKeyCodeToLinuxKeyCode(macKeyCode);
     
+    // CRITICAL: Never override Enter key (keycode 28) with character-based mapping
+    // Enter must always be sent as keycode 28 to prevent terminal escape sequence issues
+    if (linuxKeyCode == 28) {
+        // Enter key is correctly mapped - skip character-based remapping
+        // This prevents terminals from misinterpreting Enter as part of escape sequences
+    }
     // If keycode mapping failed (returned 0) or we got a character for number keys, use character-based mapping
     // Character-based mapping is more reliable for punctuation and layout-dependent keys
-    if ((linuxKeyCode == 0 || (linuxKeyCode >= 2 && linuxKeyCode <= 13)) && charsIgnoringModifiers && charsIgnoringModifiers.length > 0) {
+    else if ((linuxKeyCode == 0 || (linuxKeyCode >= 2 && linuxKeyCode <= 13)) && charsIgnoringModifiers && charsIgnoringModifiers.length > 0) {
         unichar c = [charsIgnoringModifiers characterAtIndex:0];
         // Map characters to Linux keycodes (for punctuation and layout-dependent keys)
         switch (c) {
@@ -451,6 +493,8 @@ static uint32_t macButtonToWaylandButton(NSEventType eventType, NSEvent *event) 
     
     // Update modifier state based on current modifier flags
     // This ensures modifier state is always accurate, even if modifier key events are missed
+    // NOTE: wl_seat_send_keyboard_key also updates modifiers for modifier keys,
+    // but we need to track modifiers from macOS events for non-modifier keys
     uint32_t old_mods_depressed = _seat->mods_depressed;
     
     // Map macOS modifier flags to XKB modifier masks
@@ -541,17 +585,28 @@ static uint32_t macButtonToWaylandButton(NSEventType eventType, NSEvent *event) 
     }
     
     uint32_t serial = wl_seat_get_serial(_seat);
+    
+    // Send key event - wl_seat_send_keyboard_key handles modifier updates internally for modifier keys
+    // For non-modifier keys, we've already updated the modifier state above based on macOS events
     wl_seat_send_keyboard_key(_seat, serial, time, linuxKeyCode, state);
     
-    // Send modifier update after key event if modifier state changed
-    if (old_mods_depressed != new_mods_depressed) {
-        uint32_t mods_serial = wl_seat_get_serial(_seat);
-        wl_seat_send_keyboard_modifiers(_seat, mods_serial);
-    }
+    // NOTE: We don't send modifier updates here because:
+    // 1. wl_seat_send_keyboard_key sends modifiers AFTER the key event for modifier keys
+    // 2. For non-modifier keys, modifiers should already be correct from previous modifier key events
+    // 3. Sending modifiers before the key event can cause "bad length field 0" errors in waypipe
     
     // Trigger redraw after keyboard input so text/UI updates are visible immediately
     [self triggerRedraw];
 }
+#endif
+
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+- (void)handleTouchEvent:(UIEvent *)event {
+    // iOS: Touch events - stub for now
+    (void)event;
+    // TODO: Implement touch-to-pointer conversion for iOS
+}
+#endif
 
 @end
 

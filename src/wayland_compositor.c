@@ -65,6 +65,15 @@ static const struct wl_region_interface region_interface = {
 static struct wl_surface_impl *surfaces = NULL;
 static pthread_mutex_t surfaces_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+// Client tracking list for explicit disconnection on shutdown
+struct client_tracker {
+    struct wl_client *client;
+    struct wl_list link;
+    struct wl_listener destroy_listener;
+};
+static struct wl_list client_list;
+static pthread_mutex_t client_list_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 // Thread-safe surface iteration
 void wl_compositor_for_each_surface(wl_surface_iterator_func_t iterator, void *data) {
     pthread_mutex_lock(&surfaces_mutex);
@@ -112,6 +121,18 @@ void remove_surface_from_renderer(struct wl_surface_impl *surface);
 
 // Forward declaration - function to check if window should be hidden
 extern void macos_compositor_check_and_hide_window_if_needed(void);
+
+// Client tracker destroy listener - removes client from tracking list
+static void client_tracker_destroy_listener(struct wl_listener *listener, void *data) {
+    (void)data; // Unused, but required by wl_listener interface
+    struct client_tracker *tracker = wl_container_of(listener, tracker, destroy_listener);
+    
+    pthread_mutex_lock(&client_list_mutex);
+    wl_list_remove(&tracker->link);
+    pthread_mutex_unlock(&client_list_mutex);
+    
+    free(tracker);
+}
 
 // Client destroy listener - called when a client disconnects
 static void client_destroy_listener(struct wl_listener *listener, void *data) {
@@ -248,11 +269,19 @@ static void client_destroy_listener(struct wl_listener *listener, void *data) {
 
     log_printf("[COMPOSITOR] ", "  Finished cleaning up surfaces for disconnected client\n");
     
+    // Notify macOS backend about client disconnection (handles fullscreen exit logic)
+    extern void macos_compositor_handle_client_disconnect(void);
+    macos_compositor_handle_client_disconnect();
+    
     // Check if there are any remaining surfaces
     // If no surfaces remain, hide the window
     if (surfaces == NULL) {
         log_printf("[COMPOSITOR] ", "  No remaining surfaces - hiding window\n");
         macos_compositor_check_and_hide_window_if_needed();
+        
+        // Update window title to "Wawona" when no clients are connected
+        extern void macos_compositor_update_title_no_clients(void);
+        macos_compositor_update_title_no_clients();
     } else {
         // Count remaining surfaces for logging
         int remaining_count = 0;
@@ -266,6 +295,59 @@ static void client_destroy_listener(struct wl_listener *listener, void *data) {
 }
 
 static struct wl_listener client_destroy_listener_data = {.notify = client_destroy_listener};
+
+// Function to explicitly destroy all tracked clients (for shutdown)
+void wl_compositor_destroy_all_clients(void) {
+    log_printf("[COMPOSITOR] ", "🔌 Destroying all tracked clients...\n");
+    
+    // Build a list of clients to destroy (to avoid holding mutex during destruction)
+    struct wl_client **clients_to_destroy = NULL;
+    int client_count = 0;
+    int client_capacity = 0;
+    
+    // First pass: collect all clients
+    pthread_mutex_lock(&client_list_mutex);
+    struct client_tracker *tracker;
+    wl_list_for_each(tracker, &client_list, link) {
+        if (tracker->client) {
+            if (client_count >= client_capacity) {
+                client_capacity = client_capacity ? client_capacity * 2 : 16;
+                clients_to_destroy = realloc(clients_to_destroy, 
+                                            (size_t)client_capacity * sizeof(*clients_to_destroy));
+                if (!clients_to_destroy) {
+                    log_printf("[COMPOSITOR] ", "⚠️ Failed to allocate memory for client list\n");
+                    pthread_mutex_unlock(&client_list_mutex);
+                    return;
+                }
+            }
+            clients_to_destroy[client_count++] = tracker->client;
+        }
+    }
+    pthread_mutex_unlock(&client_list_mutex);
+    
+    // Second pass: destroy all clients (without holding mutex to avoid deadlock)
+    for (int i = 0; i < client_count; i++) {
+        struct wl_client *client = clients_to_destroy[i];
+        pid_t client_pid = 0;
+        uid_t client_uid = 0;
+        gid_t client_gid = 0;
+        wl_client_get_credentials(client, &client_pid, &client_uid, &client_gid);
+        
+        log_printf("[COMPOSITOR] ", "  Destroying client %p (pid=%d)\n", 
+                   (void *)client, (int)client_pid);
+        
+        // Flush the client before destroying to send any pending messages
+        wl_client_flush(client);
+        
+        // Explicitly destroy the client - this will trigger the destroy listener
+        // which will clean up surfaces and remove the tracker from the list
+        wl_client_destroy(client);
+    }
+    
+    free(clients_to_destroy);
+    
+    log_printf("[COMPOSITOR] ", "✅ Destroyed %d client(s)\n", client_count);
+}
 
 // Compositor implementation
 struct wl_compositor_impl *wl_compositor_create(struct wl_display *display) {
@@ -284,6 +366,9 @@ struct wl_compositor_impl *wl_compositor_create(struct wl_display *display) {
     compositor->render_callback = NULL;
     compositor->update_title_callback = NULL;
     compositor->frame_callback_requested = NULL;
+    
+    // Initialize client tracking list
+    wl_list_init(&client_list);
     
     // Client destroy listener will be added in compositor_bind() when clients connect
     // Store global reference for render callbacks
@@ -370,6 +455,20 @@ static void compositor_bind(struct wl_client *client, void *data, uint32_t versi
     wl_client_add_destroy_listener(client, &client_destroy_listener_data);
     log_printf("[COMPOSITOR] ", "  Added client destroy listener for client %p\n", (void *)client);
     
+    // Track client for explicit disconnection on shutdown
+    struct client_tracker *tracker = calloc(1, sizeof(*tracker));
+    if (tracker) {
+        tracker->client = client;
+        tracker->destroy_listener.notify = client_tracker_destroy_listener;
+        wl_client_add_destroy_listener(client, &tracker->destroy_listener);
+        
+        pthread_mutex_lock(&client_list_mutex);
+        wl_list_insert(&client_list, &tracker->link);
+        pthread_mutex_unlock(&client_list_mutex);
+        
+        log_printf("[COMPOSITOR] ", "  Tracked client %p for shutdown disconnection\n", (void *)client);
+    }
+    
     struct wl_resource *resource = wl_resource_create(client, &wl_compositor_interface, (int)version, id);
     
     if (!resource) {
@@ -380,6 +479,10 @@ static void compositor_bind(struct wl_client *client, void *data, uint32_t versi
     
     wl_resource_set_implementation(resource, &compositor_interface, compositor, NULL);
     log_printf("[COMPOSITOR] ", "compositor_bind() - resource created successfully\n");
+    
+    // Notify macOS backend about new client connection
+    extern void macos_compositor_handle_client_connect(void);
+    macos_compositor_handle_client_connect();
 }
 
 static void compositor_create_surface(struct wl_client *client, struct wl_resource *resource, uint32_t id) {
@@ -465,6 +568,19 @@ static void surface_attach(struct wl_client *client, struct wl_resource *resourc
     log_printf("[COMPOSITOR] ", "surface_attach() - surface=%p, buffer=%p, x=%d, y=%d\n",
                (void *)surface, (void *)buffer, x, y);
     
+    // Log buffer type for debugging
+    if (buffer) {
+        struct wl_shm_buffer *shm_buffer = wl_shm_buffer_get(buffer);
+        void *user_data = wl_resource_get_user_data(buffer);
+        if (shm_buffer) {
+            log_printf("[COMPOSITOR] ", "surface_attach: Buffer is SHM buffer\n");
+        } else if (user_data) {
+            log_printf("[COMPOSITOR] ", "surface_attach: Buffer has custom user_data (likely custom SHM buffer)\n");
+        } else {
+            log_printf("[COMPOSITOR] ", "surface_attach: Buffer has no user_data (likely EGL buffer)\n");
+        }
+    }
+    
     // Release old buffer if attached and different from new buffer
     if (surface->buffer_resource && surface->buffer_resource != buffer) {
         if (!surface->buffer_release_sent) {
@@ -473,8 +589,18 @@ static void surface_attach(struct wl_client *client, struct wl_resource *resourc
             struct wl_client *buffer_client = wl_resource_get_client(surface->buffer_resource);
             if (buffer_client) {
                 // Buffer resource is still valid - safe to send release
+                // Note: EGL buffers may not have buffer_data user_data, but we can still send release
+                // Check if it's an SHM buffer first, otherwise assume it's valid to release
+                struct wl_shm_buffer *shm_buffer = wl_shm_buffer_get(surface->buffer_resource);
                 struct buffer_data *buf_data = wl_resource_get_user_data(surface->buffer_resource);
-                if (buf_data) {
+                
+                // Send release for both SHM buffers (with buffer_data) and EGL buffers (without buffer_data)
+                // EGL buffers don't have buffer_data, but they still need release events
+                if (shm_buffer || buf_data) {
+                    wl_buffer_send_release(surface->buffer_resource);
+                } else {
+                    // Neither SHM nor custom buffer_data - likely EGL buffer, still send release
+                    log_printf("[COMPOSITOR] ", "surface_attach: Releasing EGL buffer (no buffer_data)\n");
                     wl_buffer_send_release(surface->buffer_resource);
                 }
             } else {
@@ -583,6 +709,17 @@ static void surface_commit(struct wl_client *client, struct wl_resource *resourc
     log_printf("[COMPOSITOR] ", "surface_commit() - surface=%p, buffer=%p, committed=true\n", 
                (void *)surface, (void *)surface->buffer_resource);
     
+    // CRITICAL: Check if this is a cursor surface - cursor surfaces should NOT be handled as regular surfaces
+    // Cursor surfaces should not receive enter/leave events or be rendered as windows
+    if (global_seat && global_seat->cursor_surface == resource) {
+        log_printf("[COMPOSITOR] ", "surface_commit: cursor surface commit (surface=%p) - skipping normal handling\n", 
+                  (void *)surface);
+        // Cursor surfaces are handled specially - they don't get enter/leave events
+        // and they're not rendered as regular windows
+        // Just send frame callback if requested
+        goto send_frame_callback;
+    }
+    
     // According to Wayland spec: "If wl_surface.attach is sent with a NULL wl_buffer,
     // the following wl_surface.commit will remove the surface content."
     // Clear the layer contents when committing a NULL buffer
@@ -637,28 +774,82 @@ static void surface_commit(struct wl_client *client, struct wl_resource *resourc
             
             // Send keyboard enter for the toplevel surface
             // NOTE: Client must request keyboard via seat.get_keyboard() first
-            if (global_seat->keyboard_resource) {
-                uint32_t serial = wl_seat_get_serial(global_seat);
-                struct wl_array keys;
-                wl_array_init(&keys);
-                log_printf("[COMPOSITOR] ", "surface_commit: sending keyboard enter to toplevel surface %p\n", (void *)surface);
-                wl_seat_send_keyboard_enter(global_seat, surface->resource, serial, &keys);
-                wl_array_release(&keys);
+            // CRITICAL: Verify surface resource is still valid before sending events
+            // CRITICAL: Always defer keyboard enter via wl_seat_send_keyboard_enter (it handles deferral internally)
+            // This is safe because wl_seat_send_keyboard_enter defers the actual call to avoid FFI callback issues
+            if (global_seat->keyboard_resource && surface->resource) {
+                // CRITICAL: Verify surface resource is still valid and hasn't been destroyed
+                struct wl_surface_impl *check_surface = wl_resource_get_user_data(surface->resource);
+                if (check_surface != surface) {
+                    log_printf("[COMPOSITOR] ", "surface_commit: surface resource was destroyed - skipping keyboard enter\n");
+                } else {
+                    struct wl_client *surface_client = wl_resource_get_client(surface->resource);
+                    if (surface_client) {
+                        // CRITICAL: Final check right before calling - surface->resource might have changed
+                        if (surface->resource && wl_resource_get_user_data(surface->resource) == surface) {
+                            uint32_t serial = wl_seat_get_serial(global_seat);
+                            struct wl_array keys;
+                            wl_array_init(&keys);
+                            // wl_array_init should set size=0 and data=NULL for an empty array
+                            // This is the correct state - an empty array means no keys are pressed
+                            log_printf("[COMPOSITOR] ", "surface_commit: scheduling keyboard enter for toplevel surface %p (keys array: size=%zu, data=%p)\n", 
+                                      (void *)surface, keys.size, (void *)keys.data);
+                            // Store surface->resource in local variable to prevent it from changing
+                            struct wl_resource *surface_res = surface->resource;
+                            // One more check
+                            if (surface_res && wl_resource_get_user_data(surface_res) == surface) {
+                                // wl_seat_send_keyboard_enter will defer the actual call internally
+                                wl_seat_send_keyboard_enter(global_seat, surface_res, serial, &keys);
+                            } else {
+                                log_printf("[COMPOSITOR] ", "surface_commit: surface resource became invalid right before keyboard enter\n");
+                            }
+                            wl_array_release(&keys);
+                        } else {
+                            log_printf("[COMPOSITOR] ", "surface_commit: surface resource became invalid during keyboard enter setup\n");
+                        }
+                    } else {
+                        log_printf("[COMPOSITOR] ", "surface_commit: surface resource's client disconnected - skipping keyboard enter\n");
+                    }
+                }
             } else {
                 log_printf("[COMPOSITOR] ", "surface_commit: keyboard_resource is NULL - client hasn't requested keyboard yet\n");
             }
             
             // Send pointer enter when surface gets focus (required before button events)
             // This ensures button events can be sent immediately without waiting for mouse motion
-            if (global_seat->pointer_resource) {
-                uint32_t serial = wl_seat_get_serial(global_seat);
-                // Use center of surface for initial pointer position
-                // Note: Wayland uses top-left origin, so Y increases downward
-                double x = surface->buffer_width > 0 ? surface->buffer_width / 2.0 : 200.0;
-                double y = surface->buffer_height > 0 ? surface->buffer_height / 2.0 : 150.0;
-                log_printf("[COMPOSITOR] ", "surface_commit: sending pointer enter to toplevel surface %p at (%.1f, %.1f)\n",
-                          (void *)surface, x, y);
-                wl_seat_send_pointer_enter(global_seat, surface->resource, serial, x, y);
+            // CRITICAL: Verify surface resource is still valid before sending events
+            if (global_seat->pointer_resource && surface->resource) {
+                // CRITICAL: Verify surface resource is still valid and hasn't been destroyed
+                struct wl_surface_impl *check_surface = wl_resource_get_user_data(surface->resource);
+                if (check_surface != surface) {
+                    log_printf("[COMPOSITOR] ", "surface_commit: surface resource was destroyed - skipping pointer enter\n");
+                } else {
+                    struct wl_client *surface_client = wl_resource_get_client(surface->resource);
+                    if (surface_client) {
+                        // CRITICAL: Final check right before calling - surface->resource might have changed
+                        if (surface->resource && wl_resource_get_user_data(surface->resource) == surface) {
+                            uint32_t serial = wl_seat_get_serial(global_seat);
+                            // Use center of surface for initial pointer position
+                            // Note: Wayland uses top-left origin, so Y increases downward
+                            double x = surface->buffer_width > 0 ? surface->buffer_width / 2.0 : 200.0;
+                            double y = surface->buffer_height > 0 ? surface->buffer_height / 2.0 : 150.0;
+                            log_printf("[COMPOSITOR] ", "surface_commit: sending pointer enter to toplevel surface %p at (%.1f, %.1f)\n",
+                                      (void *)surface, x, y);
+                            // Store surface->resource in local variable to prevent it from changing
+                            struct wl_resource *surface_res = surface->resource;
+                            // One more check
+                            if (surface_res && wl_resource_get_user_data(surface_res) == surface) {
+                                wl_seat_send_pointer_enter(global_seat, surface_res, serial, x, y);
+                            } else {
+                                log_printf("[COMPOSITOR] ", "surface_commit: surface resource became invalid right before pointer enter\n");
+                            }
+                        } else {
+                            log_printf("[COMPOSITOR] ", "surface_commit: surface resource became invalid during pointer enter setup\n");
+                        }
+                    } else {
+                        log_printf("[COMPOSITOR] ", "surface_commit: surface resource's client disconnected - skipping pointer enter\n");
+                    }
+                }
             }
             
             // Update focused surface
@@ -697,7 +888,16 @@ send_frame_callback:
     
     // Trigger immediate rendering if callback is set and buffer is available
     if (surface->buffer_resource && global_compositor && global_compositor->render_callback) {
-        global_compositor->render_callback(surface);
+        // Verify buffer is still valid before rendering
+        struct wl_client *buffer_client = wl_resource_get_client(surface->buffer_resource);
+        if (buffer_client) {
+            // Buffer is valid - safe to render
+            // The renderer will handle EGL buffers gracefully (skip rendering with warning)
+            global_compositor->render_callback(surface);
+        } else {
+            // Buffer was destroyed - skip rendering
+            log_printf("[COMPOSITOR] ", "surface_commit: Buffer resource destroyed - skipping render\n");
+        }
     }
 }
 

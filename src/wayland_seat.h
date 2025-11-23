@@ -28,6 +28,23 @@ struct wl_seat_impl {
     uint32_t mods_latched;    // Latched modifier keys
     uint32_t mods_locked;     // Locked modifier keys (e.g., Caps Lock)
     uint32_t group;            // Keyboard group
+    
+    // Deferred keyboard enter event (to avoid calling variadic function from FFI callback)
+    struct wl_event_source *pending_keyboard_enter_idle;
+    struct wl_resource *pending_keyboard_enter_surface;
+    struct wl_resource *pending_keyboard_enter_keyboard_resource;
+    uint32_t pending_keyboard_enter_serial;
+    struct wl_array *pending_keyboard_enter_keys; // Points to keys array (must be valid until callback runs)
+    
+    // Deferred modifiers event (sent after keyboard enter)
+    struct wl_event_source *pending_modifiers_idle;
+    bool pending_modifiers_needed;
+    uint32_t pending_modifiers_serial;
+    
+    // Cursor surface tracking
+    struct wl_resource *cursor_surface;  // Current cursor surface (if any)
+    int32_t cursor_hotspot_x;
+    int32_t cursor_hotspot_y;
 };
 
 struct wl_seat_impl *wl_seat_create(struct wl_display *display);

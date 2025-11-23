@@ -1,0 +1,20 @@
+#!/bin/bash
+# Test nested compositor functionality
+
+WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+export WAYLAND_DISPLAY
+
+echo "Testing nested compositor..."
+echo "1. Start Wawona compositor"
+echo "2. Run: $0 weston-nested"
+echo "3. Inside nested Weston, run: weston-simple-shm"
+echo ""
+echo "Press Enter to continue..."
+read
+
+if [ "$1" = "weston-nested" ]; then
+    exec "$(dirname "$0")/weston-nested"
+else
+    echo "Usage: $0 weston-nested"
+    exit 1
+fi

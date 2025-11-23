@@ -1,5 +1,41 @@
 cmake_minimum_required(VERSION 3.20)
-project(Wawona LANGUAGES C OBJC)
+
+# Read version from VERSION file
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" PROJECT_VERSION_STRING)
+string(STRIP "${PROJECT_VERSION_STRING}" PROJECT_VERSION_STRING)
+
+# Parse version components (format: MAJOR.MINOR.PATCH)
+string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)" VERSION_MATCH "${PROJECT_VERSION_STRING}")
+if(VERSION_MATCH)
+    set(PROJECT_VERSION_MAJOR ${CMAKE_MATCH_1})
+    set(PROJECT_VERSION_MINOR ${CMAKE_MATCH_2})
+    set(PROJECT_VERSION_PATCH ${CMAKE_MATCH_3})
+    set(PROJECT_VERSION "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}")
+else()
+    # Fallback if VERSION file doesn't match expected format
+    set(PROJECT_VERSION_MAJOR 1)
+    set(PROJECT_VERSION_MINOR 0)
+    set(PROJECT_VERSION_PATCH 0)
+    set(PROJECT_VERSION "1.0.0")
+endif()
+
+# Detect iOS build - check CMAKE_SYSTEM_NAME first, then CMAKE_OSX_SYSROOT
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(IS_IOS TRUE)
+    set(IS_MACOS FALSE)
+    message(STATUS "Building for iOS (CMAKE_SYSTEM_NAME=iOS)")
+elseif(CMAKE_OSX_SYSROOT AND CMAKE_OSX_SYSROOT MATCHES "iphonesimulator")
+    set(IS_IOS TRUE)
+    set(IS_MACOS FALSE)
+    set(CMAKE_SYSTEM_NAME iOS)
+    message(STATUS "Building for iOS Simulator (detected from CMAKE_OSX_SYSROOT)")
+else()
+    set(IS_IOS FALSE)
+    set(IS_MACOS TRUE)
+    message(STATUS "Building for macOS")
+endif()
+
+project(Wawona VERSION ${PROJECT_VERSION} LANGUAGES C OBJC)
 
 # From-scratch Wayland compositor for macOS
 # We use ONLY libwayland-server (no WLRoots - it's Linux-only)
@@ -14,7 +50,28 @@ set(CMAKE_OBJC_STANDARD_REQUIRED ON)
 
 # Strict compiler flags - treat warnings as errors (like Rust)
 # Maximum warnings and strict type checking
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic -Werror")
+# iOS-specific flags
+if(IS_IOS)
+    # Get iOS SDK path if not already set
+    if(NOT CMAKE_OSX_SYSROOT)
+        execute_process(
+            COMMAND xcrun --sdk iphonesimulator --show-sdk-path
+            OUTPUT_VARIABLE IOS_SDK_PATH
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        set(CMAKE_OSX_SYSROOT ${IOS_SDK_PATH})
+    endif()
+    set(CMAKE_OSX_ARCHITECTURES arm64)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET 15.0)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -arch arm64 -isysroot ${CMAKE_OSX_SYSROOT} -mios-simulator-version-min=15.0")
+    set(CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS} -arch arm64 -isysroot ${CMAKE_OSX_SYSROOT} -mios-simulator-version-min=15.0 -fobjc-arc")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lobjc")
+    # iOS: Enable warnings-as-errors (same as macOS)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic -Werror")
+    set(CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS} -Wall -Wextra -Wpedantic -Werror")
+else()
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic -Werror")
+endif()
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-prototypes -Wmissing-prototypes")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wold-style-definition -Wmissing-declarations")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wuninitialized -Winit-self")
@@ -54,130 +111,270 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(CMAKE_OBJC_FLAGS_DEBUG "${CMAKE_OBJC_FLAGS_DEBUG} -fsanitize=leak -fno-omit-frame-pointer")
 endif()
 
-# Set up pkg-config path to check both Homebrew and /usr/local (where wayland gets installed)
-# Apple Silicon: /opt/homebrew
-# Intel Mac: /usr/local
-# Manual installs: /usr/local
-set(ENV{PKG_CONFIG_PATH} "/usr/local/lib/pkgconfig:/opt/homebrew/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
-
-# Headers - support both Apple Silicon and Intel Macs
-# Check both locations since wayland may be installed in either
-if(EXISTS /opt/homebrew/include)
-    include_directories(/opt/homebrew/include)
+# Set up pkg-config path - conditional based on platform
+if(IS_IOS)
+    # iOS: Use ios-install directory
+    set(IOS_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ios-install")
+    set(ENV{PKG_CONFIG_PATH} "${IOS_INSTALL_DIR}/lib/pkgconfig:${IOS_INSTALL_DIR}/libdata/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+    include_directories("${IOS_INSTALL_DIR}/include")
+    link_directories("${IOS_INSTALL_DIR}/lib")
+else()
+    # macOS: Check both Homebrew and /usr/local
+    set(ENV{PKG_CONFIG_PATH} "/usr/local/lib/pkgconfig:/opt/homebrew/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+    if(EXISTS /opt/homebrew/include)
+        include_directories(/opt/homebrew/include)
+    endif()
+    if(EXISTS /usr/local/include)
+        include_directories(/usr/local/include)
+    endif()
+    if(EXISTS /opt/homebrew/lib)
+        link_directories(/opt/homebrew/lib)
+    endif()
+    if(EXISTS /usr/local/lib)
+        link_directories(/usr/local/lib)
+    endif()
 endif()
-if(EXISTS /usr/local/include)
-    include_directories(/usr/local/include)
+
+# Platform-specific Frameworks
+if(IS_IOS)
+    # iOS Frameworks
+    find_library(FOUNDATION_LIB Foundation REQUIRED)
+    find_library(UIKIT_LIB UIKit REQUIRED)
+    find_library(QUARTZCORE_LIB QuartzCore REQUIRED)
+    find_library(COREVIDEO_LIB CoreVideo REQUIRED)
+    find_library(COREMEDIA_LIB CoreMedia REQUIRED)
+    find_library(COREGRAPHICS_LIB CoreGraphics REQUIRED)
+    find_library(METAL_LIB Metal REQUIRED)
+    find_library(METALKIT_LIB MetalKit REQUIRED)
+    find_library(IOSURFACE_LIB IOSurface REQUIRED)
+    find_library(VIDEOTOOLBOX_LIB VideoToolbox REQUIRED)
+    find_library(AVFOUNDATION_LIB AVFoundation REQUIRED)
+    set(COCOA_LIB "")  # Not used on iOS
+else()
+    # macOS Frameworks
+    find_library(COCOA_LIB Cocoa REQUIRED)
+    find_library(QUARTZCORE_LIB QuartzCore REQUIRED)
+    find_library(COREVIDEO_LIB CoreVideo REQUIRED)
+    find_library(COREMEDIA_LIB CoreMedia REQUIRED)
+    find_library(COREGRAPHICS_LIB CoreGraphics REQUIRED)
+    find_library(METAL_LIB Metal REQUIRED)
+    find_library(METALKIT_LIB MetalKit REQUIRED)
+    find_library(IOSURFACE_LIB IOSurface REQUIRED)
+    find_library(VIDEOTOOLBOX_LIB VideoToolbox REQUIRED)
+    find_library(AVFOUNDATION_LIB AVFoundation REQUIRED)
+    set(UIKIT_LIB "")  # Not used on macOS
 endif()
 
-# Libraries - support both Apple Silicon and Intel Macs
-# Check both locations since wayland may be installed in either
-if(EXISTS /opt/homebrew/lib)
-    link_directories(/opt/homebrew/lib)
-endif()
-if(EXISTS /usr/local/lib)
-    link_directories(/usr/local/lib)
+# Source files - conditional based on platform
+if(IS_IOS)
+    set(SOURCES
+        src/ios_main.m
+        src/macos_backend.m
+        src/macos_backend.h
+        src/logging.c
+        src/logging.h
+        src/wayland_compositor.c
+        src/wayland_compositor.h
+        src/wayland_output.c
+        src/wayland_output.h
+        src/wayland_seat.c
+        src/wayland_seat.h
+        src/wayland_shm.c
+        src/wayland_shm.h
+        src/wayland_subcompositor.c
+        src/wayland_subcompositor.h
+        src/wayland_data_device_manager.c
+        src/wayland_data_device_manager.h
+        src/wayland_primary_selection.c
+        src/wayland_primary_selection.h
+        src/wayland_protocol_stubs.c
+        src/wayland_protocol_stubs.h
+        src/cursor_shape_bridge.m
+        src/primary-selection-protocol.c
+        src/primary-selection-protocol.h
+        src/xdg-activation-protocol.c
+        src/xdg-activation-protocol.h
+        src/fractional-scale-protocol.c
+        src/fractional-scale-protocol.h
+        src/cursor-shape-protocol.c
+        src/cursor-shape-protocol.h
+        src/text-input-v3-protocol.c
+        src/text-input-v3-protocol.h
+        src/text-input-v1-protocol.c
+        src/text-input-v1-protocol.h
+        src/text-input-v1-protocol.h.server
+        src/xdg-decoration-protocol.c
+        src/xdg-decoration-protocol.h
+        src/xdg-toplevel-icon-protocol.c
+        src/xdg-toplevel-icon-protocol.h
+        src/surface_renderer.m
+        src/surface_renderer.h
+        src/input_handler.m
+        src/input_handler.h
+        src/xdg-shell-protocol.c
+        src/xdg-shell-protocol.h
+        src/xdg_shell.c
+        src/xdg_shell.h
+        src/wayland_viewporter.c
+        src/wayland_viewporter.h
+        src/wayland_shell.c
+        src/wayland_gtk_shell.c
+        src/wayland_gtk_shell.h
+        src/wayland_plasma_shell.c
+        src/wayland_plasma_shell.h
+        src/wayland_qt_extensions.c
+        src/wayland_qt_extensions.h
+        src/wayland_shell.h
+        src/wayland_screencopy.c
+        src/wayland_screencopy.h
+        src/wayland_presentation.c
+        src/wayland_presentation.h
+        src/presentation-time-protocol.c
+        src/presentation-time-protocol.h
+        src/wayland_color_management.c
+        src/wayland_color_management.h
+        src/color-management-v1-protocol.h
+        src/wayland_linux_dmabuf.c
+        src/wayland_linux_dmabuf.h
+        src/wayland_drm.c
+        src/wayland_drm.h
+        src/wayland_idle_inhibit.c
+        src/wayland_idle_inhibit.h
+        src/wayland_pointer_gestures.c
+        src/wayland_pointer_gestures.h
+        src/wayland_relative_pointer.c
+        src/wayland_relative_pointer.h
+        src/wayland_pointer_constraints.c
+        src/wayland_pointer_constraints.h
+        src/metal_renderer.m
+        src/metal_renderer.h
+        src/metal_dmabuf.m
+        src/metal_dmabuf.h
+        src/metal_waypipe.m
+        src/metal_waypipe.h
+        src/egl_buffer_handler.h
+        src/wayland_tablet.c
+        src/wayland_tablet.h
+        src/wayland_idle_manager.c
+        src/wayland_idle_manager.h
+        src/wayland_keyboard_shortcuts.c
+        src/wayland_keyboard_shortcuts.h
+        src/WawonaPreferences.m
+        src/WawonaPreferences.h
+        src/WawonaPreferencesManager.m
+        src/WawonaPreferencesManager.h
+        src/WawonaAboutPanel.m
+        src/WawonaAboutPanel.h
+    )
+else()
+    set(SOURCES
+        src/main.m
+        src/macos_backend.m
+        src/macos_backend.h
+        src/logging.c
+        src/logging.h
+        src/wayland_compositor.c
+        src/wayland_compositor.h
+        src/wayland_output.c
+        src/wayland_output.h
+        src/wayland_seat.c
+        src/wayland_seat.h
+        src/wayland_shm.c
+        src/wayland_shm.h
+        src/wayland_subcompositor.c
+        src/wayland_subcompositor.h
+        src/wayland_data_device_manager.c
+        src/wayland_data_device_manager.h
+        src/wayland_primary_selection.c
+        src/wayland_primary_selection.h
+        src/wayland_protocol_stubs.c
+        src/wayland_protocol_stubs.h
+        src/cursor_shape_bridge.m
+        src/primary-selection-protocol.c
+        src/primary-selection-protocol.h
+        src/xdg-activation-protocol.c
+        src/xdg-activation-protocol.h
+        src/fractional-scale-protocol.c
+        src/fractional-scale-protocol.h
+        src/cursor-shape-protocol.c
+        src/cursor-shape-protocol.h
+        src/text-input-v3-protocol.c
+        src/text-input-v3-protocol.h
+        src/text-input-v1-protocol.c
+        src/text-input-v1-protocol.h
+        src/text-input-v1-protocol.h.server
+        src/xdg-decoration-protocol.c
+        src/xdg-decoration-protocol.h
+        src/xdg-toplevel-icon-protocol.c
+        src/xdg-toplevel-icon-protocol.h
+        src/surface_renderer.m
+        src/surface_renderer.h
+        src/input_handler.m
+        src/input_handler.h
+        src/xdg-shell-protocol.c
+        src/xdg-shell-protocol.h
+        src/xdg_shell.c
+        src/xdg_shell.h
+        src/wayland_viewporter.c
+        src/wayland_viewporter.h
+        src/wayland_shell.c
+        src/wayland_gtk_shell.c
+        src/wayland_gtk_shell.h
+        src/wayland_plasma_shell.c
+        src/wayland_plasma_shell.h
+        src/wayland_qt_extensions.c
+        src/wayland_qt_extensions.h
+        src/wayland_shell.h
+        src/wayland_screencopy.c
+        src/wayland_screencopy.h
+        src/wayland_presentation.c
+        src/wayland_presentation.h
+        src/presentation-time-protocol.c
+        src/presentation-time-protocol.h
+        src/wayland_color_management.c
+        src/wayland_color_management.h
+        src/color-management-v1-protocol.h
+        src/wayland_linux_dmabuf.c
+        src/wayland_linux_dmabuf.h
+        src/wayland_drm.c
+        src/wayland_drm.h
+        src/wayland_idle_inhibit.c
+        src/wayland_idle_inhibit.h
+        src/wayland_pointer_gestures.c
+        src/wayland_pointer_gestures.h
+        src/wayland_relative_pointer.c
+        src/wayland_relative_pointer.h
+        src/wayland_pointer_constraints.c
+        src/wayland_pointer_constraints.h
+        src/metal_renderer.m
+        src/metal_renderer.h
+        src/metal_dmabuf.m
+        src/metal_dmabuf.h
+        src/metal_waypipe.m
+        src/metal_waypipe.h
+        src/egl_buffer_handler.c
+        src/egl_buffer_handler.h
+        src/wayland_tablet.c
+        src/wayland_tablet.h
+        src/wayland_idle_manager.c
+        src/wayland_idle_manager.h
+        src/wayland_keyboard_shortcuts.c
+        src/wayland_keyboard_shortcuts.h
+        src/WawonaPreferences.m
+        src/WawonaPreferences.h
+        src/WawonaPreferencesManager.m
+        src/WawonaPreferencesManager.h
+        src/WawonaAboutPanel.m
+        src/WawonaAboutPanel.h
+    )
 endif()
 
-# macOS Frameworks
-find_library(COCOA_LIB Cocoa REQUIRED)
-find_library(QUARTZCORE_LIB QuartzCore REQUIRED)
-find_library(COREVIDEO_LIB CoreVideo REQUIRED)
-find_library(COREMEDIA_LIB CoreMedia REQUIRED)
-find_library(COREGRAPHICS_LIB CoreGraphics REQUIRED)
-find_library(METAL_LIB Metal REQUIRED)
-find_library(METALKIT_LIB MetalKit REQUIRED)
-find_library(IOSURFACE_LIB IOSurface REQUIRED)
-find_library(VIDEOTOOLBOX_LIB VideoToolbox REQUIRED)
-find_library(AVFOUNDATION_LIB AVFoundation REQUIRED)
-
-# Source files
-set(SOURCES
-    src/main.m
-    src/macos_backend.m
-    src/macos_backend.h
-    src/logging.c
-    src/logging.h
-    src/wayland_compositor.c
-    src/wayland_compositor.h
-    src/wayland_output.c
-    src/wayland_output.h
-    src/wayland_seat.c
-    src/wayland_seat.h
-    src/wayland_shm.c
-    src/wayland_shm.h
-    src/wayland_subcompositor.c
-    src/wayland_subcompositor.h
-    src/wayland_data_device_manager.c
-    src/wayland_data_device_manager.h
-    src/wayland_primary_selection.c
-    src/wayland_primary_selection.h
-    src/wayland_protocol_stubs.c
-    src/wayland_protocol_stubs.h
-    src/cursor_shape_bridge.m
-    src/primary-selection-protocol.c
-    src/primary-selection-protocol.h
-    src/xdg-activation-protocol.c
-    src/xdg-activation-protocol.h
-    src/fractional-scale-protocol.c
-    src/fractional-scale-protocol.h
-    src/cursor-shape-protocol.c
-    src/cursor-shape-protocol.h
-    src/text-input-v3-protocol.c
-    src/text-input-v3-protocol.h
-    src/xdg-decoration-protocol.c
-    src/xdg-decoration-protocol.h
-    src/xdg-toplevel-icon-protocol.c
-    src/xdg-toplevel-icon-protocol.h
-    src/surface_renderer.m
-    src/surface_renderer.h
-    src/input_handler.m
-    src/input_handler.h
-    src/xdg-shell-protocol.c
-    src/xdg-shell-protocol.h
-    src/xdg_shell.c
-    src/xdg_shell.h
-    src/wayland_viewporter.c
-    src/wayland_viewporter.h
-    src/wayland_shell.c
-    src/wayland_gtk_shell.c
-    src/wayland_gtk_shell.h
-    src/wayland_plasma_shell.c
-    src/wayland_plasma_shell.h
-    src/wayland_qt_extensions.c
-    src/wayland_qt_extensions.h
-    src/wayland_shell.h
-    src/wayland_screencopy.c
-    src/wayland_screencopy.h
-    src/wayland_presentation.c
-    src/wayland_presentation.h
-    src/presentation-time-protocol.c
-    src/presentation-time-protocol.h
-    src/wayland_color_management.c
-    src/wayland_color_management.h
-    src/color-management-v1-protocol.h
-    src/wayland_linux_dmabuf.c
-    src/wayland_linux_dmabuf.h
-    src/wayland_idle_inhibit.c
-    src/wayland_idle_inhibit.h
-    src/wayland_pointer_gestures.c
-    src/wayland_pointer_gestures.h
-    src/wayland_relative_pointer.c
-    src/wayland_relative_pointer.h
-    src/wayland_pointer_constraints.c
-    src/wayland_pointer_constraints.h
-    src/metal_renderer.m
-    src/metal_renderer.h
-    src/metal_dmabuf.m
-    src/metal_dmabuf.h
-    src/metal_waypipe.m
-    src/metal_waypipe.h
-    src/wayland_tablet.c
-    src/wayland_tablet.h
-    src/wayland_idle_manager.c
-    src/wayland_idle_manager.h
-    src/wayland_keyboard_shortcuts.c
-    src/wayland_keyboard_shortcuts.h
-)
+# iOS-specific: Add iOS Info.plist
+if(IS_IOS)
+    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.ios.in ${CMAKE_CURRENT_BINARY_DIR}/Info.plist @ONLY)
+else()
+    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.in ${CMAKE_CURRENT_BINARY_DIR}/Info.plist @ONLY)
+endif()
 
 # Compile Metal shaders
 # Metal shaders need to be compiled into a .metallib file
@@ -308,37 +505,119 @@ if(PIXMAN_FOUND)
     message(STATUS "Found pixman via pkg-config: ${PIXMAN_VERSION}")
 else()
     # Fallback: find pixman manually
+    set(PIXMAN_SEARCH_PATHS
+        /usr/local/lib
+        /opt/homebrew/lib
+    )
+    if(IS_IOS)
+        set(PIXMAN_SEARCH_PATHS ${IOS_INSTALL_DIR}/lib ${PIXMAN_SEARCH_PATHS})
+    endif()
     find_library(PIXMAN_LIB
         NAMES pixman-1
-        PATHS
-            /usr/local/lib
-            /opt/homebrew/lib
+        PATHS ${PIXMAN_SEARCH_PATHS}
         NO_DEFAULT_PATH
     )
     if(PIXMAN_LIB)
         message(STATUS "Found pixman library manually: ${PIXMAN_LIB}")
         set(PIXMAN_LIBRARIES ${PIXMAN_LIB})
+        # Try to find headers
+        if(IS_IOS)
+            find_path(PIXMAN_INCLUDE_DIR
+                NAMES pixman.h
+                PATHS ${IOS_INSTALL_DIR}/include
+                NO_DEFAULT_PATH
+            )
+            if(PIXMAN_INCLUDE_DIR)
+                set(PIXMAN_INCLUDE_DIRS ${PIXMAN_INCLUDE_DIR})
+            endif()
+        endif()
     else()
-        message(FATAL_ERROR "pixman-1 not found! Install with: brew install pixman")
+        if(IS_IOS)
+            message(FATAL_ERROR "pixman-1 not found! Install with: ./install-pixman-ios.sh")
+        else()
+            message(FATAL_ERROR "pixman-1 not found! Install with: brew install pixman")
+        endif()
     endif()
 endif()
 
-# Link libraries
+# Find EGL using pkg-config (for KosmicKrisp+Zink EGL support)
+pkg_check_modules(EGL egl)
+if(EGL_FOUND)
+    message(STATUS "Found EGL via pkg-config: ${EGL_VERSION}")
+else()
+    # Fallback: find EGL manually
+    find_library(EGL_LIB
+        NAMES EGL
+        PATHS
+            /usr/local/lib
+            /opt/homebrew/lib
+        NO_DEFAULT_PATH
+    )
+    if(EGL_LIB)
+        message(STATUS "Found EGL library manually: ${EGL_LIB}")
+        set(EGL_LIBRARIES ${EGL_LIB})
+        # Try to find headers
+        find_path(EGL_INCLUDE_DIR
+            NAMES EGL/egl.h
+            PATHS
+                /usr/local/include
+                /opt/homebrew/include
+            NO_DEFAULT_PATH
+        )
+        if(EGL_INCLUDE_DIR)
+            set(EGL_INCLUDE_DIRS ${EGL_INCLUDE_DIR})
+            message(STATUS "Found EGL headers: ${EGL_INCLUDE_DIRS}")
+        endif()
+    else()
+        message(WARNING "EGL not found - EGL buffer support will be disabled. Install with: make kosmickrisp")
+        set(EGL_LIBRARIES "")
+        set(EGL_INCLUDE_DIRS "")
+    endif()
+endif()
+
+# Link libraries - conditional based on platform
 # NOTE: We do NOT link wlroots (Linux-only, not needed)
-target_link_libraries(Wawona
-    ${COCOA_LIB}
-    ${QUARTZCORE_LIB}
-    ${COREVIDEO_LIB}
-    ${COREMEDIA_LIB}
-    ${COREGRAPHICS_LIB}
-    ${METAL_LIB}
-    ${METALKIT_LIB}
-    ${IOSURFACE_LIB}
-    ${VIDEOTOOLBOX_LIB}
-    ${AVFOUNDATION_LIB}
-    ${WAYLAND_SERVER_LIBRARIES}
-    ${PIXMAN_LIBRARIES}
-)
+if(IS_IOS)
+    target_link_libraries(Wawona
+        ${FOUNDATION_LIB}
+        ${UIKIT_LIB}
+        ${QUARTZCORE_LIB}
+        ${COREVIDEO_LIB}
+        ${COREMEDIA_LIB}
+        ${COREGRAPHICS_LIB}
+        ${METAL_LIB}
+        ${METALKIT_LIB}
+        ${IOSURFACE_LIB}
+        ${VIDEOTOOLBOX_LIB}
+        ${AVFOUNDATION_LIB}
+        ${WAYLAND_SERVER_LIBRARIES}
+        ${PIXMAN_LIBRARIES}
+    )
+else()
+    target_link_libraries(Wawona
+        ${COCOA_LIB}
+        ${QUARTZCORE_LIB}
+        ${COREVIDEO_LIB}
+        ${COREMEDIA_LIB}
+        ${COREGRAPHICS_LIB}
+        ${METAL_LIB}
+        ${METALKIT_LIB}
+        ${IOSURFACE_LIB}
+        ${VIDEOTOOLBOX_LIB}
+        ${AVFOUNDATION_LIB}
+        ${WAYLAND_SERVER_LIBRARIES}
+        ${PIXMAN_LIBRARIES}
+    )
+endif()
+
+# Link EGL if available (for KosmicKrisp+Zink EGL buffer support)
+# For iOS, EGL is disabled in KosmicKrisp, so skip linking
+if(IS_IOS)
+    message(STATUS "EGL disabled for iOS builds (KosmicKrisp builds Vulkan driver only)")
+elseif(EGL_FOUND OR EGL_LIBRARIES)
+    target_link_libraries(Wawona ${EGL_LIBRARIES})
+    message(STATUS "Linking EGL library for EGL buffer support")
+endif()
 
 # Include directories for wayland
 if(WAYLAND_SERVER_FOUND AND WAYLAND_SERVER_INCLUDE_DIRS)
@@ -348,6 +627,12 @@ elseif(WAYLAND_SERVER_INCLUDE_DIRS)
 endif()
 if(PIXMAN_FOUND AND PIXMAN_INCLUDE_DIRS)
     target_include_directories(Wawona PRIVATE ${PIXMAN_INCLUDE_DIRS})
+endif()
+# Include directories for EGL
+if(EGL_FOUND AND EGL_INCLUDE_DIRS)
+    target_include_directories(Wawona PRIVATE ${EGL_INCLUDE_DIRS})
+elseif(EGL_INCLUDE_DIRS)
+    target_include_directories(Wawona PRIVATE ${EGL_INCLUDE_DIRS})
 endif()
 
 # Copy Metal shader library to build directory (next to executable)

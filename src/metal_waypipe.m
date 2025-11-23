@@ -65,7 +65,7 @@ struct metal_waypipe_context *metal_waypipe_create(id<MTLDevice> device) {
         NULL, // sourceImageBufferAttributes
         NULL, // compressedDataAllocator
         compression_output_callback,
-        (__bridge void *)context,
+        (void *)context,
         &encoder
     );
     

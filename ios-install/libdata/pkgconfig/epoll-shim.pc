@@ -1,0 +1,12 @@
+prefix=/Users/alex/Wawona/ios-install
+exec_prefix=${prefix}
+libdir=/Users/alex/Wawona/ios-install/lib
+includedir=/Users/alex/Wawona/ios-install/include
+
+Name: epoll-shim
+URL: https://github.com/jiixyj/epoll-shim
+Description: Small epoll implementation using kqueue
+Version: 
+Libs: -L${libdir} -lepoll-shim
+Libs.private: -pthread -lrt
+Cflags: -I${includedir}/libepoll-shim

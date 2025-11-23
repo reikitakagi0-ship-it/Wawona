@@ -1,0 +1,12 @@
+prefix=/Users/alex/Wawona/ios-install
+exec_prefix=${prefix}
+libdir=/Users/alex/Wawona/ios-install/lib
+includedir=/Users/alex/Wawona/ios-install/include
+
+Name: epoll-shim-interpose
+URL: https://github.com/jiixyj/epoll-shim
+Description: Small epoll implementation using kqueue (interposing wrapper)
+Version: 
+Requires: epoll-shim
+Libs: -L${libdir} -lepoll-shim-interpose
+Cflags: -DEPOLL_SHIM_DISABLE_WRAPPER_MACROS

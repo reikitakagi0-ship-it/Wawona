@@ -1,6 +1,8 @@
 #import "metal_dmabuf.h"
 #import <Metal/Metal.h>
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 #import <IOSurface/IOSurface.h>
+#endif
 #import <CoreVideo/CoreVideo.h>
 #include "logging.h"
 #include <stdlib.h>

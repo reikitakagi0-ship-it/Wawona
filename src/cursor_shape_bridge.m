@@ -1,8 +1,16 @@
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+#import <UIKit/UIKit.h>
+#else
 #import <Cocoa/Cocoa.h>
+#endif
 #include "wayland_protocol_stubs.h"
 
 // Bridge function to set macOS cursor from C code
 void set_macos_cursor_shape(uint32_t shape) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    // iOS: Cursor shapes not applicable
+    (void)shape;
+#else
     @autoreleasepool {
         NSCursor *cursor = nil;
         
@@ -83,5 +91,6 @@ void set_macos_cursor_shape(uint32_t shape) {
             [cursor set];
         }
     }
+#endif
 }
 

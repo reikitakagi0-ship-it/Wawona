@@ -63,6 +63,7 @@ void xdg_wm_base_set_output_size(struct xdg_wm_base_impl *wm_base, int32_t width
 struct wl_surface_impl;
 struct wl_client;
 bool xdg_surface_is_toplevel(struct wl_surface_impl *wl_surface);
+struct xdg_toplevel_impl *xdg_surface_get_toplevel_from_wl_surface(struct wl_surface_impl *wl_surface);
 
 // Mark a client as a nested compositor (will auto-fullscreen its toplevels)
 void xdg_shell_mark_nested_compositor(struct wl_client *client);

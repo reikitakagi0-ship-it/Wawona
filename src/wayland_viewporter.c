@@ -76,9 +76,20 @@ static void viewport_set_source(struct wl_client *client, struct wl_resource *re
         return;
     }
     
-    if (width < 0 || height < 0) {
+    // Protocol requires: "If all of x, y, width and height are -1.0, the source rectangle is
+    // unset instead. Any other set of values where width or height are zero
+    // or negative, or x or y are negative, raise the bad_value protocol error."
+    if (x == -1 && y == -1 && width == -1 && height == -1) {
+        // Unset source (per protocol spec)
+        viewport->has_src = false;
+        log_printf("[VIEWPORTER] ", "viewport_set_source() - surface=%p, unset source\n",
+                   (void *)viewport->surface);
+        return;
+    }
+    
+    if (x < 0 || y < 0 || width <= 0 || height <= 0) {
         wl_resource_post_error(resource, WP_VIEWPORT_ERROR_BAD_VALUE,
-                              "negative width or height");
+                              "negative x/y or zero/negative width/height");
         return;
     }
     
@@ -101,9 +112,20 @@ static void viewport_set_destination(struct wl_client *client, struct wl_resourc
         return;
     }
     
-    if (width < 0 || height < 0) {
+    // Protocol requires: "Any other pair of values for width and height that
+    // contains zero or negative values raises the bad_value protocol error."
+    // Also handle -1, -1 as "unset" per protocol spec
+    if (width == -1 && height == -1) {
+        // Unset destination (per protocol spec)
+        viewport->has_dst = false;
+        log_printf("[VIEWPORTER] ", "viewport_set_destination() - surface=%p, unset destination\n",
+                   (void *)viewport->surface);
+        return;
+    }
+    
+    if (width <= 0 || height <= 0) {
         wl_resource_post_error(resource, WP_VIEWPORT_ERROR_BAD_VALUE,
-                              "negative width or height");
+                              "zero or negative width or height");
         return;
     }
     
@@ -111,8 +133,27 @@ static void viewport_set_destination(struct wl_client *client, struct wl_resourc
     viewport->dst_height = wl_fixed_to_double(height);
     viewport->has_dst = true;
     
-    log_printf("[VIEWPORTER] ", "viewport_set_destination() - surface=%p, dst=(%.2f, %.2f)\n",
-               (void *)viewport->surface, viewport->dst_width, viewport->dst_height);
+    // Warn if viewport destination is suspiciously small compared to buffer size
+    // This can indicate a client bug (e.g., foot setting 4x3 instead of actual surface size)
+    if (viewport->surface && viewport->surface->buffer_width > 0 && viewport->surface->buffer_height > 0) {
+        double buffer_w = (double)viewport->surface->buffer_width;
+        double buffer_h = (double)viewport->surface->buffer_height;
+        double ratio_w = viewport->dst_width / buffer_w;
+        double ratio_h = viewport->dst_height / buffer_h;
+        
+        // If viewport is less than 1% of buffer size, it's likely a bug
+        if (ratio_w < 0.01 || ratio_h < 0.01) {
+            log_printf("[VIEWPORTER] ", "⚠️  WARNING: viewport_set_destination() - surface=%p, dst=(%.2f, %.2f) is suspiciously small compared to buffer=(%d, %d) (ratios: %.4fx, %.4fx)\n",
+                       (void *)viewport->surface, viewport->dst_width, viewport->dst_height,
+                       viewport->surface->buffer_width, viewport->surface->buffer_height, ratio_w, ratio_h);
+        } else {
+            log_printf("[VIEWPORTER] ", "viewport_set_destination() - surface=%p, dst=(%.2f, %.2f)\n",
+                       (void *)viewport->surface, viewport->dst_width, viewport->dst_height);
+        }
+    } else {
+        log_printf("[VIEWPORTER] ", "viewport_set_destination() - surface=%p, dst=(%.2f, %.2f)\n",
+                   (void *)viewport->surface, viewport->dst_width, viewport->dst_height);
+    }
 }
 
 static const struct wp_viewport_interface viewport_interface = {

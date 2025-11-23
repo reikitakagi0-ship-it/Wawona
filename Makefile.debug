@@ -1,0 +1,190 @@
+# Wawona Debug Makefile
+# Provides debugging targets using lldb and dyld
+
+.PHONY: debug-compositor-lldb debug-compositor-dyld debug-weston-simple-egl-lldb debug-weston-simple-egl-dyld debug-kosmickrisp-lldb debug-kosmickrisp-dyld
+
+# Colors for output
+GREEN := \033[0;32m
+YELLOW := \033[0;33m
+BLUE := \033[0;34m
+RED := \033[0;31m
+NC := \033[0m # No Color
+
+# Directories
+BUILD_DIR := build
+COMPOSITOR_BIN := $(BUILD_DIR)/Wawona
+WESTON_SIMPLE_EGL_BIN := test-clients/bin/weston-simple-egl
+KOSMICKRISP_EGL_LIB := kosmickrisp/build/src/egl/libEGL.1.dylib
+
+# Environment
+XDG_RUNTIME_DIR ?= $(shell echo $${TMPDIR:-/tmp}/wayland-runtime)
+WAYLAND_DISPLAY ?= wayland-0
+EGL_LOG_LEVEL ?= debug
+
+# Debug Compositor with lldb
+debug-compositor-lldb: $(COMPOSITOR_BIN)
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶ Debugging Wawona Compositor (lldb)$(NC)"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@mkdir -p "$(XDG_RUNTIME_DIR)"
+	@chmod 0700 "$(XDG_RUNTIME_DIR)"
+	@rm -f "$(XDG_RUNTIME_DIR)/$(WAYLAND_DISPLAY)"
+	@echo "$(YELLOW)ℹ$(NC) Log file: /tmp/compositor-debug-lldb.log"
+	@echo "$(YELLOW)ℹ$(NC) WAYLAND_DISPLAY=$(WAYLAND_DISPLAY)"
+	@echo ""
+	@WAYLAND_DISPLAY="$(WAYLAND_DISPLAY)" \
+	 XDG_RUNTIME_DIR="$(XDG_RUNTIME_DIR)" \
+	 lldb $(COMPOSITOR_BIN) -- \
+		-o "settings set target.output-path /tmp/compositor-debug-lldb.log" \
+		-o "settings set target.error-path /tmp/compositor-debug-lldb.log" \
+		-o "run" \
+		-o "bt" \
+		-o "quit"
+
+# Debug Compositor with dyld (environment variable logging)
+debug-compositor-dyld: $(COMPOSITOR_BIN)
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶ Debugging Wawona Compositor (dyld)$(NC)"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@mkdir -p "$(XDG_RUNTIME_DIR)"
+	@chmod 0700 "$(XDG_RUNTIME_DIR)"
+	@rm -f "$(XDG_RUNTIME_DIR)/$(WAYLAND_DISPLAY)"
+	@echo "$(YELLOW)ℹ$(NC) Log file: /tmp/compositor-debug-dyld.log"
+	@echo "$(YELLOW)ℹ$(NC) WAYLAND_DISPLAY=$(WAYLAND_DISPLAY)"
+	@echo ""
+	@WAYLAND_DISPLAY="$(WAYLAND_DISPLAY)" \
+	 XDG_RUNTIME_DIR="$(XDG_RUNTIME_DIR)" \
+	 DYLD_PRINT_LIBRARIES=1 \
+	 DYLD_PRINT_LIBRARIES_POST_LAUNCH=1 \
+	 DYLD_PRINT_APIS=1 \
+	 DYLD_PRINT_BINDINGS=1 \
+	 DYLD_PRINT_INITIALIZERS=1 \
+	 DYLD_PRINT_SEGMENTS=1 \
+	 DYLD_PRINT_STATISTICS=1 \
+	 $(COMPOSITOR_BIN) 2>&1 | tee /tmp/compositor-debug-dyld.log
+
+# Debug weston-simple-egl with lldb
+debug-weston-simple-egl-lldb: $(WESTON_SIMPLE_EGL_BIN)
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶ Debugging weston-simple-egl (lldb)$(NC)"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(YELLOW)ℹ$(NC) Log file: /tmp/weston-simple-egl-debug-lldb.log"
+	@echo "$(YELLOW)ℹ$(NC) Make sure compositor is running first!"
+	@echo ""
+	@EGL_LOG_LEVEL="$(EGL_LOG_LEVEL)" \
+	 DYLD_LIBRARY_PATH="/Users/alex/Wawona/kosmickrisp/build/src/egl:/opt/homebrew/lib:$$DYLD_LIBRARY_PATH" \
+	 LIBGL_DRIVERS_PATH="/opt/homebrew/lib/dri" \
+	 MESA_LOADER_DRIVER_OVERRIDE="zink" \
+	 EGL_PLATFORM="wayland" \
+	 VK_ICD_FILENAMES="/opt/homebrew/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json" \
+	 lldb $(WESTON_SIMPLE_EGL_BIN) -- \
+		-o "settings set target.output-path /tmp/weston-simple-egl-debug-lldb.log" \
+		-o "settings set target.error-path /tmp/weston-simple-egl-debug-lldb.log" \
+		-o "run" \
+		-o "bt" \
+		-o "quit"
+
+# Debug weston-simple-egl with dyld
+debug-weston-simple-egl-dyld: $(WESTON_SIMPLE_EGL_BIN)
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶ Debugging weston-simple-egl (dyld)$(NC)"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(YELLOW)ℹ$(NC) Log file: /tmp/weston-simple-egl-debug-dyld.log"
+	@echo "$(YELLOW)ℹ$(NC) Make sure compositor is running first!"
+	@echo ""
+	@EGL_LOG_LEVEL="$(EGL_LOG_LEVEL)" \
+	 DYLD_LIBRARY_PATH="/Users/alex/Wawona/kosmickrisp/build/src/egl:/opt/homebrew/lib:$$DYLD_LIBRARY_PATH" \
+	 LIBGL_DRIVERS_PATH="/opt/homebrew/lib/dri" \
+	 MESA_LOADER_DRIVER_OVERRIDE="zink" \
+	 EGL_PLATFORM="wayland" \
+	 VK_ICD_FILENAMES="/opt/homebrew/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json" \
+	 DYLD_PRINT_LIBRARIES=1 \
+	 DYLD_PRINT_LIBRARIES_POST_LAUNCH=1 \
+	 DYLD_PRINT_APIS=1 \
+	 DYLD_PRINT_BINDINGS=1 \
+	 DYLD_PRINT_INITIALIZERS=1 \
+	 DYLD_PRINT_SEGMENTS=1 \
+	 DYLD_PRINT_STATISTICS=1 \
+	 $(WESTON_SIMPLE_EGL_BIN) 2>&1 | tee /tmp/weston-simple-egl-debug-dyld.log
+
+# Debug KosmicKrisp EGL library with lldb (test standalone)
+debug-kosmickrisp-lldb:
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶ Debugging KosmicKrisp EGL Library (lldb)$(NC)"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@if [ ! -f "$(KOSMICKRISP_EGL_LIB)" ]; then \
+		echo "$(RED)✗$(NC) KosmicKrisp EGL library not found: $(KOSMICKRISP_EGL_LIB)"; \
+		echo "$(YELLOW)ℹ$(NC) Run 'make kosmickrisp' first"; \
+		exit 1; \
+	fi
+	@echo "$(YELLOW)ℹ$(NC) Log file: /tmp/kosmickrisp-debug-lldb.log"
+	@echo "$(YELLOW)ℹ$(NC) Testing EGL library with test-egl-comprehensive"
+	@echo ""
+	@cd kosmickrisp/build && \
+	 EGL_LOG_LEVEL="$(EGL_LOG_LEVEL)" \
+	 EGL_PLATFORM="macos" \
+	 lldb ./test-egl-comprehensive -- \
+		-o "settings set target.output-path /tmp/kosmickrisp-debug-lldb.log" \
+		-o "settings set target.error-path /tmp/kosmickrisp-debug-lldb.log" \
+		-o "run" \
+		-o "bt" \
+		-o "quit"
+
+# Debug KosmicKrisp EGL library with dyld
+debug-kosmickrisp-dyld:
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶ Debugging KosmicKrisp EGL Library (dyld)$(NC)"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@if [ ! -f "$(KOSMICKRISP_EGL_LIB)" ]; then \
+		echo "$(RED)✗$(NC) KosmicKrisp EGL library not found: $(KOSMICKRISP_EGL_LIB)"; \
+		echo "$(YELLOW)ℹ$(NC) Run 'make kosmickrisp' first"; \
+		exit 1; \
+	fi
+	@echo "$(YELLOW)ℹ$(NC) Log file: /tmp/kosmickrisp-debug-dyld.log"
+	@echo "$(YELLOW)ℹ$(NC) Testing EGL library with test-egl-comprehensive"
+	@echo ""
+	@cd kosmickrisp/build && \
+	 EGL_LOG_LEVEL="$(EGL_LOG_LEVEL)" \
+	 EGL_PLATFORM="macos" \
+	 DYLD_PRINT_LIBRARIES=1 \
+	 DYLD_PRINT_LIBRARIES_POST_LAUNCH=1 \
+	 DYLD_PRINT_APIS=1 \
+	 DYLD_PRINT_BINDINGS=1 \
+	 DYLD_PRINT_INITIALIZERS=1 \
+	 DYLD_PRINT_SEGMENTS=1 \
+	 DYLD_PRINT_STATISTICS=1 \
+	 ./test-egl-comprehensive 2>&1 | tee /tmp/kosmickrisp-debug-dyld.log
+
+# Combined debug: compositor + weston-simple-egl
+debug-full: $(COMPOSITOR_BIN) $(WESTON_SIMPLE_EGL_BIN)
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶ Full Debug Session (Compositor + Client)$(NC)"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(YELLOW)ℹ$(NC) Starting compositor in background..."
+	@mkdir -p "$(XDG_RUNTIME_DIR)"
+	@chmod 0700 "$(XDG_RUNTIME_DIR)"
+	@rm -f "$(XDG_RUNTIME_DIR)/$(WAYLAND_DISPLAY)"
+	@WAYLAND_DISPLAY="$(WAYLAND_DISPLAY)" \
+	 XDG_RUNTIME_DIR="$(XDG_RUNTIME_DIR)" \
+	 $(COMPOSITOR_BIN) > /tmp/compositor-full-debug.log 2>&1 &
+	@COMPOSITOR_PID=$$!; \
+	 echo "$(GREEN)✓$(NC) Compositor started (PID: $$COMPOSITOR_PID)"; \
+	 sleep 2; \
+	 echo "$(YELLOW)ℹ$(NC) Starting weston-simple-egl client..."; \
+	 EGL_LOG_LEVEL="$(EGL_LOG_LEVEL)" \
+	 DYLD_LIBRARY_PATH="/Users/alex/Wawona/kosmickrisp/build/src/egl:/opt/homebrew/lib:$$DYLD_LIBRARY_PATH" \
+	 LIBGL_DRIVERS_PATH="/opt/homebrew/lib/dri" \
+	 MESA_LOADER_DRIVER_OVERRIDE="zink" \
+	 EGL_PLATFORM="wayland" \
+	 VK_ICD_FILENAMES="/opt/homebrew/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json" \
+	 $(WESTON_SIMPLE_EGL_BIN) 2>&1 | tee /tmp/weston-simple-egl-full-debug.log; \
+	 CLIENT_EXIT=$$?; \
+	 echo ""; \
+	 echo "$(YELLOW)ℹ$(NC) Client exited with code $$CLIENT_EXIT"; \
+	 echo "$(YELLOW)ℹ$(NC) Stopping compositor..."; \
+	 kill $$COMPOSITOR_PID 2>/dev/null || true; \
+	 echo "$(GREEN)✓$(NC) Debug logs:"; \
+	 echo "   Compositor: /tmp/compositor-full-debug.log"; \
+	 echo "   Client: /tmp/weston-simple-egl-full-debug.log"; \
+	 exit $$CLIENT_EXIT
+

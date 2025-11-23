@@ -10,7 +10,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULES_DIR="$SCRIPT_DIR/colima-client"
 
 # Source common variables
-source "$MODULES_DIR/common.sh"
+if ! source "$MODULES_DIR/common.sh"; then
+    echo "Failed to initialize common settings" >&2
+    exit 1
+fi
 
 # Source module functions
 source "$MODULES_DIR/waypipe-setup.sh"
@@ -24,16 +27,26 @@ check_compositor_socket() {
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     
-    echo -e "${YELLOW}ℹ${NC} Checking compositor socket: ${GREEN}$SOCKET_PATH${NC}"
+    if [ "${IOS_SIMULATOR_MODE:-0}" = "1" ]; then
+        echo -e "${YELLOW}ℹ${NC} Using iOS Simulator Wawona compositor"
+        echo -e "${YELLOW}ℹ${NC} Socket path: ${GREEN}$SOCKET_PATH${NC}"
+    else
+        echo -e "${YELLOW}ℹ${NC} Checking compositor socket: ${GREEN}$SOCKET_PATH${NC}"
+    fi
+    
     if [ ! -S "$SOCKET_PATH" ] && [ ! -e "$SOCKET_PATH" ]; then
         echo -e "${RED}✗${NC} Compositor socket not found: ${RED}$SOCKET_PATH${NC}"
         echo ""
-        echo -e "${YELLOW}ℹ${NC} Start the compositor first: ${GREEN}make compositor${NC}"
+        if [ "${IOS_SIMULATOR_MODE:-0}" = "1" ]; then
+            echo -e "${YELLOW}ℹ${NC} Start iOS compositor first: ${GREEN}make ios-compositor${NC}"
+        else
+            echo -e "${YELLOW}ℹ${NC} Start the compositor first: ${GREEN}make compositor${NC}"
+        fi
         exit 1
     fi
     echo -e "${GREEN}✓${NC} Compositor socket found"
     
-    if [ "$COCOMA_XDG_RUNTIME_DIR" != "$XDG_RUNTIME_DIR" ]; then
+    if [ "${IOS_SIMULATOR_MODE:-0}" != "1" ] && [ "$COCOMA_XDG_RUNTIME_DIR" != "$XDG_RUNTIME_DIR" ]; then
         echo -e "${YELLOW}ℹ${NC} Using Colima-compatible path: ${GREEN}$COCOMA_XDG_RUNTIME_DIR${NC}"
     fi
     echo ""
@@ -237,7 +250,14 @@ FONTCONFIG_EOF
 " &
 WAYPIPE_SERVER_PID=\$!
 sleep 2
-wait \$WAYPIPE_SERVER_PID
+wait \$WAYPIPE_SERVER_PID || {
+    WESTON_EXIT_CODE=\$?
+    echo ""
+    echo "⚠ Weston exited with code \$WESTON_EXIT_CODE"
+    echo "   This may be normal if Weston was stopped or crashed"
+    echo "   Check logs above for details"
+    exit \$WESTON_EXIT_CODE
+}
 CONTAINER_WAYPIPE_WESTON_EOF
 }
 
@@ -564,7 +584,14 @@ run_container_waypipe_weston() {
         \" &
         WAYPIPE_SERVER_PID=\$!
         sleep 2
-        wait \$WAYPIPE_SERVER_PID
+        wait \$WAYPIPE_SERVER_PID || {
+            WESTON_EXIT_CODE=\$?
+            echo \\\"\\\"
+            echo \\\"⚠ Weston exited with code \\\$WESTON_EXIT_CODE\\\"
+            echo \\\"   This may be normal if Weston was stopped or crashed\\\"
+            echo \\\"   Check logs above for details\\\"
+            exit \\\$WESTON_EXIT_CODE
+        }
         "
 }
 
@@ -904,7 +931,14 @@ create_and_run_container() {
         \" &
         WAYPIPE_SERVER_PID=\$!
         sleep 2
-        wait \$WAYPIPE_SERVER_PID
+        wait \$WAYPIPE_SERVER_PID || {
+            WESTON_EXIT_CODE=\$?
+            echo \\\"\\\"
+            echo \\\"⚠ Weston exited with code \\\$WESTON_EXIT_CODE\\\"
+            echo \\\"   This may be normal if Weston was stopped or crashed\\\"
+            echo \\\"   Check logs above for details\\\"
+            exit \\\$WESTON_EXIT_CODE
+        }
         "
 }
 
@@ -945,12 +979,38 @@ main() {
     echo -e "${YELLOW}ℹ${NC}  Wayland socket: ${GREEN}$SOCKET_PATH${NC} -> ${GREEN}/run/user/1000/waypipe-server${NC}"
     echo ""
     
-    # Run container
+    # Set up cleanup on script exit (after container finishes)
+    trap cleanup_waypipe EXIT
+    
+    # Run container (temporarily disable set -e to handle errors gracefully)
+    set +e
+    CONTAINER_EXIT_CODE=0
     if [ "$CONTAINER_EXISTS" = true ]; then
         run_container_waypipe_weston
+        CONTAINER_EXIT_CODE=$?
     else
         create_and_run_container
+        CONTAINER_EXIT_CODE=$?
     fi
+    set -e
+    
+    # Handle container exit
+    if [ $CONTAINER_EXIT_CODE -ne 0 ]; then
+        echo ""
+        echo -e "${RED}✗${NC} Container exited with code $CONTAINER_EXIT_CODE"
+        echo -e "${YELLOW}ℹ${NC} This may indicate Weston crashed or encountered an error"
+        echo -e "${YELLOW}ℹ${NC} Check the logs above for details"
+        echo ""
+        echo -e "${YELLOW}ℹ${NC} Waypipe client is still running (PID: $WAYPIPE_CLIENT_PID)"
+        echo -e "${YELLOW}ℹ${NC} To stop everything: Press Ctrl+C"
+        # Keep script running so waypipe client stays alive
+        # Wait for waypipe client to exit or user interrupt (Ctrl+C)
+        while kill -0 $WAYPIPE_CLIENT_PID 2>/dev/null; do
+            sleep 1
+        done
+    fi
+    
+    # Container finished - cleanup will happen via EXIT trap
 }
 
 # Run main function

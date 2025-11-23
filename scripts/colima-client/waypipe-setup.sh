@@ -158,6 +158,7 @@ start_waypipe_client() {
     echo -e "${GREEN}✓${NC} TCP proxy running (PID: $SOCAT_PID, port: $WAYPIPE_TCP_PORT)"
     export WAYPIPE_TCP_PORT
     export SOCAT_PID
+    export WAYPIPE_CLIENT_PID
 }
 
 # Cleanup function for waypipe
@@ -179,6 +180,8 @@ init_waypipe() {
     setup_waypipe_directory
     cleanup_existing_waypipe
     start_waypipe_client
-    trap cleanup_waypipe EXIT
+    # Set up signal handlers for cleanup (SIGINT, SIGTERM)
+    # Don't use EXIT trap - waypipe client needs to stay alive while container runs
+    trap cleanup_waypipe INT TERM
 }
 

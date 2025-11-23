@@ -8,14 +8,136 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <errno.h>
+#ifdef __APPLE__
+#include <sys/shm.h>
+#endif
 
-// Define interface structures
-const struct wl_interface zwp_linux_dmabuf_v1_interface = {
-    "zwp_linux_dmabuf_v1", 4,  // Version 4 supports feedback
+// Forward declarations
+// wl_surface_interface is defined in wayland-server-protocol.h
+// Include it here to ensure it's available
+#include <wayland-server-protocol.h>
+
+// Helper function to create an anonymous file suitable for mmap
+// On macOS, we use a temp file in XDG_RUNTIME_DIR or /tmp
+static int create_anonymous_file(size_t size) {
+    int fd = -1;
+    const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+    char *path = NULL;
+    
+    if (runtime_dir) {
+        // Use XDG_RUNTIME_DIR if available
+        size_t path_len = strlen(runtime_dir) + 50;
+        path = malloc(path_len);
+        if (path) {
+            snprintf(path, path_len, "%s/wawona-dmabuf-XXXXXX", runtime_dir);
+            fd = mkstemp(path);
+            if (fd >= 0) {
+                unlink(path); // Remove name, keep fd
+            }
+            free(path);
+        }
+    }
+    
+    // Fallback to /tmp if XDG_RUNTIME_DIR failed
+    if (fd < 0) {
+        char template[] = "/tmp/wawona-dmabuf-XXXXXX";
+        fd = mkstemp(template);
+        if (fd >= 0) {
+            unlink(template); // Remove name, keep fd
+        }
+    }
+    
+    if (fd < 0) {
+        return -1;
+    }
+    
+    // Set file size - on macOS, mmap requires at least 1 byte for empty files
+    // Use max(size, 1) to ensure the file is mmap-able
+    off_t file_size = (off_t)(size > 0 ? size : 1);
+    if (ftruncate(fd, file_size) < 0) {
+        close(fd);
+        return -1;
+    }
+    
+    return fd;
+}
+
+// Stub interfaces for types referenced in messages
+// These will be properly defined later
+static const struct wl_interface zwp_linux_buffer_params_v1_interface_stub = {
+    "zwp_linux_buffer_params_v1", 4,
     0, NULL,
     0, NULL
 };
 
+// Define method messages for zwp_linux_dmabuf_feedback_v1
+// Only one method: destroy
+static const struct wl_message zwp_linux_dmabuf_feedback_v1_requests[] = {
+    { "destroy", "", NULL },  // opcode 0: destroy (no arguments)
+};
+
+// Define event messages for zwp_linux_dmabuf_feedback_v1
+// Event order from XML: done=0, format_table=1, main_device=2, tranche_done=3, tranche_target_device=4, tranche_flags=5, tranche_formats=6
+static const struct wl_message zwp_linux_dmabuf_feedback_v1_events[] = {
+    { "done", "", NULL },                                    // opcode 0
+    { "format_table", "hu", NULL },                         // opcode 1: fd, size
+    { "main_device", "a", NULL },                           // opcode 2: device (array)
+    { "tranche_done", "", NULL },                           // opcode 3
+    { "tranche_target_device", "a", NULL },                // opcode 4: device (array)
+    { "tranche_flags", "u", NULL },                        // opcode 5: flags
+    { "tranche_formats", "a", NULL },                      // opcode 6: formats (array)
+};
+
+// Define the feedback interface with proper method and event signatures
+const struct wl_interface zwp_linux_dmabuf_feedback_v1_interface = {
+    "zwp_linux_dmabuf_feedback_v1", 1,
+    1, zwp_linux_dmabuf_feedback_v1_requests,  // 1 method: destroy
+    7, zwp_linux_dmabuf_feedback_v1_events,   // 7 events
+};
+
+// Define method and event message arrays for zwp_linux_dmabuf_v1
+// CRITICAL: Ensure all interface pointers are valid before use
+static const struct wl_interface *linux_dmabuf_types[] = {
+    NULL,
+    NULL,
+    &zwp_linux_buffer_params_v1_interface_stub,
+    &zwp_linux_dmabuf_feedback_v1_interface,
+    &wl_surface_interface, // Defined in wayland-server-protocol.h
+};
+
+// CRITICAL: For methods with multiple parameters, we need separate type arrays
+// get_surface_feedback has signature "no" (new_id + object)
+// types[0] = interface for new_id (zwp_linux_dmabuf_feedback_v1_interface)
+// types[1] = interface for object (wl_surface_interface)
+static const struct wl_interface *get_surface_feedback_types[] = {
+    &zwp_linux_dmabuf_feedback_v1_interface, // new_id parameter
+    &wl_surface_interface,                    // object parameter
+};
+
+static const struct wl_message zwp_linux_dmabuf_v1_requests[] = {
+    { "destroy", "", linux_dmabuf_types + 0 },
+    { "create_params", "n", linux_dmabuf_types + 2 },
+    { "get_default_feedback", "n", linux_dmabuf_types + 3 },
+    { "get_surface_feedback", "no", get_surface_feedback_types }, // n=new_id (feedback), o=object (surface)
+};
+
+static const struct wl_message zwp_linux_dmabuf_v1_events[] = {
+    { "format", "u", linux_dmabuf_types + 0 },
+    { "modifier", "uuu", linux_dmabuf_types + 0 },
+};
+
+// Define interface structures
+const struct wl_interface zwp_linux_dmabuf_v1_interface = {
+    "zwp_linux_dmabuf_v1", 4,  // Version 4 supports feedback
+    4, zwp_linux_dmabuf_v1_requests,  // 4 methods: destroy, create_params, get_default_feedback, get_surface_feedback
+    2, zwp_linux_dmabuf_v1_events,     // 2 events: format, modifier
+};
+
+
+// Actual interface definition (references the stub in types array above)
 const struct wl_interface zwp_linux_buffer_params_v1_interface = {
     "zwp_linux_buffer_params_v1", 4,
     0, NULL,
@@ -266,6 +388,8 @@ static const struct zwp_linux_buffer_params_v1_interface params_interface = {
 // Manager: create_params
 static void dmabuf_create_params(struct wl_client *client, struct wl_resource *resource,
                                  uint32_t params_id) {
+    log_printf("[DMABUF] ", "create_params() - CALLED! client=%p, resource=%p, params_id=%u\n",
+               (void *)client, (void *)resource, params_id);
     struct wl_linux_buffer_params_impl *params = calloc(1, sizeof(*params));
     if (!params) {
         wl_client_post_no_memory(client);
@@ -297,29 +421,279 @@ static void dmabuf_create_params(struct wl_client *client, struct wl_resource *r
 
 // Manager: destroy
 static void dmabuf_destroy(struct wl_client *client, struct wl_resource *resource) {
+    log_printf("[DMABUF] ", "destroy() - CALLED! client=%p, resource=%p\n", (void *)client, (void *)resource);
     (void)client;
     wl_resource_destroy(resource);
 }
 
+// Feedback resource user data to track the format_table fd
+struct dmabuf_feedback_data {
+    int format_table_fd;
+};
+
+// Resource destroy callback (called when resource is destroyed)
+static void feedback_resource_destroy(struct wl_resource *resource) {
+    struct dmabuf_feedback_data *data = wl_resource_get_user_data(resource);
+    if (data) {
+        // Close the format_table fd if it's still open
+        if (data->format_table_fd >= 0) {
+            close(data->format_table_fd);
+            data->format_table_fd = -1;
+        }
+        free(data);
+    }
+}
+
+// Feedback resource destroy handler (protocol method)
+static void dmabuf_feedback_destroy(struct wl_client *client, struct wl_resource *resource) {
+    (void)client;
+    wl_resource_destroy(resource);
+}
+
+// Feedback interface implementation
+// We use a simple implementation struct since we only need the destroy method
+typedef struct {
+    void (*destroy)(struct wl_client *client, struct wl_resource *resource);
+} zwp_linux_dmabuf_feedback_v1_interface_impl;
+
+static zwp_linux_dmabuf_feedback_v1_interface_impl dmabuf_feedback_interface_impl = {
+    .destroy = dmabuf_feedback_destroy,
+};
+
 // Manager: get_default_feedback (version 4+)
 static void dmabuf_get_default_feedback(struct wl_client *client, struct wl_resource *resource,
                                        uint32_t id) {
-    (void)client;
-    (void)resource;
-    (void)id;
-    // TODO: Implement feedback for version 4+
-    log_printf("[DMABUF] ", "get_default_feedback() - not yet implemented\n");
+    log_printf("[DMABUF] ", "get_default_feedback() - CALLED! client=%p, resource=%p, id=%u\n",
+               (void *)client, (void *)resource, id);
+    uint32_t version = (uint32_t)wl_resource_get_version(resource);
+    
+    // Create feedback resource
+    struct wl_resource *feedback_resource = wl_resource_create(client, &zwp_linux_dmabuf_feedback_v1_interface, (int)version, id);
+    if (!feedback_resource) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    
+    // Allocate user data to track the format_table fd
+    struct dmabuf_feedback_data *feedback_data = calloc(1, sizeof(*feedback_data));
+    if (!feedback_data) {
+        wl_client_post_no_memory(client);
+        wl_resource_destroy(feedback_resource);
+        return;
+    }
+    feedback_data->format_table_fd = -1;
+    
+    // Set implementation with user data for cleanup
+    wl_resource_set_implementation(feedback_resource, &dmabuf_feedback_interface_impl, feedback_data, feedback_resource_destroy);
+    
+    log_printf("[DMABUF] ", "get_default_feedback() - created feedback resource %p\n", (void *)feedback_resource);
+    
+    // On macOS, we don't have DRM devices, so we send minimal feedback
+    // This tells the client to use software rendering via Zink/Vulkan
+    // Event opcodes from XML order: done=0, format_table=1, main_device=2, tranche_done=3, tranche_target_device=4, tranche_flags=5, tranche_formats=6
+    
+    // Send format_table event (empty table = no hardware formats)
+    // The format table is a binary format: each entry is 16 bytes (format: u32, padding: u32, modifier: u64)
+    // Empty table (0 bytes) indicates no hardware formats are supported
+    // 
+    // CRITICAL: On macOS, mmap(NULL, 0, ...) fails, so we need to send at least 1 byte
+    // However, the protocol allows size=0 for empty tables. To work around macOS mmap limitations,
+    // we send size=16 (one empty entry) with all zeros, which the client will interpret as an empty table
+    // since the size indicates no entries (size / 16 = 0 entries)
+    //
+    // Actually, let's check: if size=0, the client should skip mmap. But if it doesn't, we need a workaround.
+    // The safest approach: send a minimal 16-byte entry (all zeros) and size=16.
+    // The client will parse it as 0 entries since format=0 and modifier=0 means "no format"
+    uint32_t table_size = 16; // Send one 16-byte entry (all zeros) for macOS mmap compatibility
+    int table_fd = create_anonymous_file(table_size);
+    if (table_fd >= 0) {
+        // Write zeros to the file (format=0, padding=0, modifier=0 means "no format")
+        // This allows mmap to succeed on macOS while still indicating an empty table
+        uint64_t zero_entry[2] = {0, 0}; // format (u32) + padding (u32) = u64, modifier (u64)
+        if (write(table_fd, zero_entry, 16) != 16) {
+            log_printf("[DMABUF] ", "get_default_feedback() - failed to write format table data\n");
+            close(table_fd);
+            table_fd = -1;
+        } else {
+            // Seek back to beginning for reading
+            lseek(table_fd, 0, SEEK_SET);
+            
+            // Store fd in user data so we can close it when resource is destroyed
+            feedback_data->format_table_fd = table_fd;
+            
+            // Send format_table event - Wayland will send the fd via SCM_RIGHTS
+            // CRITICAL: Keep the fd open until the resource is destroyed
+            // Even though SCM_RIGHTS creates a copy in the client, the server fd must
+            // remain valid until the client has finished reading it (mmap)
+            // We'll close it in feedback_resource_destroy when the resource is destroyed
+            wl_resource_post_event(feedback_resource, 1, table_fd, table_size); // format_table event (opcode 1: fd, size)
+            
+            log_printf("[DMABUF] ", "get_default_feedback() - sent format_table (fd=%d, size=%u, empty table)\n", table_fd, table_size);
+        }
+    } else {
+        log_printf("[DMABUF] ", "get_default_feedback() - failed to create format table file: %s\n", strerror(errno));
+        // Continue without format_table - client should handle gracefully
+    }
+    
+    // Send main_device event with dummy device ID (0 = no hardware device)
+    struct wl_array device_array;
+    wl_array_init(&device_array);
+    dev_t dummy_device = 0; // 0 indicates no hardware device
+    dev_t *dev = wl_array_add(&device_array, sizeof(dev_t));
+    if (dev) {
+        *dev = dummy_device;
+        wl_resource_post_event(feedback_resource, 2, &device_array); // main_device event (opcode 2)
+    }
+    wl_array_release(&device_array);
+    
+    // Send tranche_target_device (same dummy device)
+    wl_array_init(&device_array);
+    dev = wl_array_add(&device_array, sizeof(dev_t));
+    if (dev) {
+        *dev = dummy_device;
+        wl_resource_post_event(feedback_resource, 4, &device_array); // tranche_target_device event (opcode 4)
+    }
+    wl_array_release(&device_array);
+    
+    // Send tranche_flags (0 = no special flags)
+    wl_resource_post_event(feedback_resource, 5, 0); // tranche_flags event (opcode 5)
+    
+    // Send tranche_formats (empty array = no formats)
+    struct wl_array formats_array;
+    wl_array_init(&formats_array);
+    wl_resource_post_event(feedback_resource, 6, &formats_array); // tranche_formats event (opcode 6)
+    wl_array_release(&formats_array);
+    
+    // Send tranche_done
+    wl_resource_post_event(feedback_resource, 3); // tranche_done event (opcode 3)
+    
+    // Send done event
+    wl_resource_post_event(feedback_resource, 0); // done event (opcode 0)
+    
+    log_printf("[DMABUF] ", "get_default_feedback() - sent minimal feedback (no hardware device)\n");
 }
 
 // Manager: get_surface_feedback (version 4+)
 static void dmabuf_get_surface_feedback(struct wl_client *client, struct wl_resource *resource,
                                         uint32_t id, struct wl_resource *surface) {
-    (void)client;
-    (void)resource;
-    (void)id;
-    (void)surface;
-    // TODO: Implement surface feedback for version 4+
-    log_printf("[DMABUF] ", "get_surface_feedback() - not yet implemented\n");
+    log_printf("[DMABUF] ", "get_surface_feedback() - CALLED! client=%p, resource=%p, id=%u, surface=%p\n", 
+               (void *)client, (void *)resource, id, (void *)surface);
+    
+    // Validate inputs
+    if (!client || !resource) {
+        log_printf("[DMABUF] ", "get_surface_feedback() - ERROR: invalid client or resource\n");
+        return;
+    }
+    
+    if (!surface) {
+        log_printf("[DMABUF] ", "get_surface_feedback() - ERROR: surface is NULL\n");
+        // Don't post error - just log and return (client will handle gracefully)
+        return;
+    }
+    
+    // Validate surface resource
+    if (wl_resource_get_user_data(surface) == NULL) {
+        log_printf("[DMABUF] ", "get_surface_feedback() - ERROR: surface resource has no user data\n");
+        return;
+    }
+    
+    uint32_t version = (uint32_t)wl_resource_get_version(resource);
+    log_printf("[DMABUF] ", "get_surface_feedback() - resource version=%u\n", version);
+    
+    // Create feedback resource
+    struct wl_resource *feedback_resource = wl_resource_create(client, &zwp_linux_dmabuf_feedback_v1_interface, (int)version, id);
+    if (!feedback_resource) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    
+    // Allocate user data to track the format_table fd
+    struct dmabuf_feedback_data *feedback_data = calloc(1, sizeof(*feedback_data));
+    if (!feedback_data) {
+        wl_client_post_no_memory(client);
+        wl_resource_destroy(feedback_resource);
+        return;
+    }
+    feedback_data->format_table_fd = -1;
+    
+    // Set implementation with user data for cleanup
+    wl_resource_set_implementation(feedback_resource, &dmabuf_feedback_interface_impl, feedback_data, feedback_resource_destroy);
+    
+    log_printf("[DMABUF] ", "get_surface_feedback() - created feedback resource %p for surface %p\n", (void *)feedback_resource, (void *)surface);
+    
+    // Send the same minimal feedback as get_default_feedback
+    // On macOS, we don't have DRM devices, so we send minimal feedback
+    // This tells the client to use software rendering via Zink/Vulkan
+    // Event opcodes from XML order: done=0, format_table=1, main_device=2, tranche_done=3, tranche_target_device=4, tranche_flags=5, tranche_formats=6
+    
+    // Send format_table event (empty table = no hardware formats)
+    uint32_t table_size = 16; // Send one 16-byte entry (all zeros) for macOS mmap compatibility
+    int table_fd = create_anonymous_file(table_size);
+    if (table_fd >= 0) {
+        // Write zeros to the file (format=0, padding=0, modifier=0 means "no format")
+        // This allows mmap to succeed on macOS while still indicating an empty table
+        uint64_t zero_entry[2] = {0, 0}; // format (u32) + padding (u32) = u64, modifier (u64)
+        if (write(table_fd, zero_entry, 16) != 16) {
+            log_printf("[DMABUF] ", "get_surface_feedback() - failed to write format table data\n");
+            close(table_fd);
+            table_fd = -1;
+        } else {
+            // Seek back to beginning for reading
+            lseek(table_fd, 0, SEEK_SET);
+            
+            // Store fd in user data so we can close it when resource is destroyed
+            feedback_data->format_table_fd = table_fd;
+            
+            // Send format_table event - Wayland will send the fd via SCM_RIGHTS
+            // CRITICAL: Keep the fd open until the resource is destroyed
+            // Even though SCM_RIGHTS creates a copy in the client, the server fd must
+            // remain valid until the client has finished reading it (mmap)
+            // We'll close it in feedback_resource_destroy when the resource is destroyed
+            wl_resource_post_event(feedback_resource, 1, table_fd, table_size); // format_table event (opcode 1: fd, size)
+            
+            log_printf("[DMABUF] ", "get_surface_feedback() - sent format_table (fd=%d, size=%u, empty table)\n", table_fd, table_size);
+        }
+    } else {
+        log_printf("[DMABUF] ", "get_surface_feedback() - failed to create format table file: %s\n", strerror(errno));
+        // Continue without format_table - client should handle gracefully
+    }
+    
+    // Send main_device event with dummy device ID (0 = no hardware device)
+    struct wl_array device_array;
+    wl_array_init(&device_array);
+    dev_t dummy_device = 0; // 0 indicates no hardware device
+    dev_t *dev = wl_array_add(&device_array, sizeof(dev_t));
+    if (dev) {
+        *dev = dummy_device;
+        wl_resource_post_event(feedback_resource, 2, &device_array); // main_device event (opcode 2)
+    }
+    wl_array_release(&device_array);
+    
+    // Send tranche_target_device (same dummy device)
+    wl_array_init(&device_array);
+    dev = wl_array_add(&device_array, sizeof(dev_t));
+    if (dev) {
+        *dev = dummy_device;
+        wl_resource_post_event(feedback_resource, 4, &device_array); // tranche_target_device event (opcode 4)
+    }
+    wl_array_release(&device_array);
+    
+    // Send tranche_flags (0 = no special flags)
+    wl_resource_post_event(feedback_resource, 5, 0); // tranche_flags event (opcode 5)
+    
+    // Send tranche_formats (empty array = no formats)
+    struct wl_array formats_array;
+    wl_array_init(&formats_array);
+    wl_resource_post_event(feedback_resource, 6, &formats_array); // tranche_formats event (opcode 6)
+    wl_array_release(&formats_array);
+    
+    // Send tranche_done
+    wl_resource_post_event(feedback_resource, 3); // tranche_done event (opcode 3)
+    
+    // Send done event
+    wl_resource_post_event(feedback_resource, 0); // done event (opcode 0)
+    
+    log_printf("[DMABUF] ", "get_surface_feedback() - sent minimal feedback (no hardware device)\n");
 }
 
 static const struct zwp_linux_dmabuf_v1_interface dmabuf_interface = {
@@ -337,13 +711,54 @@ struct wl_linux_dmabuf_manager_impl {
 static void dmabuf_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
     struct wl_linux_dmabuf_manager_impl *dmabuf = data;
     
+    log_printf("[DMABUF] ", "dmabuf_bind() - client=%p, version=%u, id=%u\n", (void *)client, version, id);
+    
+    // CRITICAL: Log the actual function pointers to verify they're set correctly
+    log_printf("[DMABUF] ", "dmabuf_bind() - function pointers: destroy=%p, create_params=%p, get_default_feedback=%p, get_surface_feedback=%p\n",
+               (void *)dmabuf_interface.destroy,
+               (void *)dmabuf_interface.create_params,
+               (void *)dmabuf_interface.get_default_feedback,
+               (void *)dmabuf_interface.get_surface_feedback);
+    
     struct wl_resource *resource = wl_resource_create(client, &zwp_linux_dmabuf_v1_interface, (int)version, id);
     if (!resource) {
         wl_client_post_no_memory(client);
         return;
     }
     
+    log_printf("[DMABUF] ", "dmabuf_bind() - setting implementation (resource=%p, get_surface_feedback=%p)\n",
+               (void *)resource, (void *)dmabuf_interface.get_surface_feedback);
+    
     wl_resource_set_implementation(resource, &dmabuf_interface, dmabuf, NULL);
+    
+    log_printf("[DMABUF] ", "dmabuf_bind() - implementation set, version=%u (supports get_surface_feedback=%s)\n",
+               version, version >= 4 ? "yes" : "no");
+    
+    // CRITICAL: Log the wl_interface structure to verify it's correct
+    log_printf("[DMABUF] ", "dmabuf_bind() - wl_interface: name=%s, version=%d, method_count=%d, event_count=%d\n",
+               zwp_linux_dmabuf_v1_interface.name,
+               zwp_linux_dmabuf_v1_interface.version,
+               zwp_linux_dmabuf_v1_interface.method_count,
+               zwp_linux_dmabuf_v1_interface.event_count);
+    
+    // CRITICAL: Verify wl_surface_interface pointer is valid
+    log_printf("[DMABUF] ", "dmabuf_bind() - wl_surface_interface pointer: %p\n", (const void *)&wl_surface_interface);
+    log_printf("[DMABUF] ", "dmabuf_bind() - wl_surface_interface: name=%s, version=%d, method_count=%d, event_count=%d\n",
+               wl_surface_interface.name,
+               wl_surface_interface.version,
+               wl_surface_interface.method_count,
+               wl_surface_interface.event_count);
+    
+    // CRITICAL: Verify the wl_message structure for get_surface_feedback
+    log_printf("[DMABUF] ", "dmabuf_bind() - get_surface_feedback message: name=%s, signature=%s, types=%p\n",
+               zwp_linux_dmabuf_v1_requests[3].name,
+               zwp_linux_dmabuf_v1_requests[3].signature,
+               (const void *)zwp_linux_dmabuf_v1_requests[3].types);
+    if (zwp_linux_dmabuf_v1_requests[3].types) {
+        log_printf("[DMABUF] ", "dmabuf_bind() - get_surface_feedback types[0]=%p, types[1]=%p\n",
+                   (const void *)zwp_linux_dmabuf_v1_requests[3].types[0],
+                   (const void *)zwp_linux_dmabuf_v1_requests[3].types[1]);
+    }
     
     // Advertise supported formats (deprecated in v4+, but send for compatibility)
     if (version < 4) {

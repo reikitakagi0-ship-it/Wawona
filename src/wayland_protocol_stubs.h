@@ -54,6 +54,14 @@ void wl_toplevel_icon_destroy(struct wl_toplevel_icon_manager_impl *manager);
 struct wl_text_input_manager_impl *wl_text_input_create(struct wl_display *display);
 void wl_text_input_destroy(struct wl_text_input_manager_impl *manager);
 
+// Text Input Protocol v1 (for weston-editor compatibility)
+struct wl_text_input_manager_v1_impl {
+    struct wl_display *display;
+    struct wl_global *global;
+};
+struct wl_text_input_manager_v1_impl *wl_text_input_v1_create(struct wl_display *display);
+void wl_text_input_v1_destroy(struct wl_text_input_manager_v1_impl *manager);
+
 // Text input event helpers (called when surfaces gain/lose focus)
 void wl_text_input_send_enter(struct wl_resource *surface);
 void wl_text_input_send_leave(struct wl_resource *surface);

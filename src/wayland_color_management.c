@@ -44,6 +44,11 @@ static const struct wp_color_manager_v1_interface color_manager_interface = {
 // ColorSync helper functions
 bool detect_hdr_support(void) {
     // Check if display supports HDR
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    // iOS: Most devices support wide color (P3), but HDR support varies
+    // Return false for now - can be enhanced later
+    return false;
+#else
     CGDirectDisplayID mainDisplay = CGMainDisplayID();
     if (mainDisplay == kCGNullDirectDisplay) {
         return false;
@@ -71,9 +76,14 @@ bool detect_hdr_support(void) {
     
     CGColorSpaceRelease(displayColorSpace);
     return is_hdr;
+#endif
 }
 
 CGColorSpaceRef get_display_color_space(void) {
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    // iOS: Use device RGB color space (typically P3 on modern devices)
+    return CGColorSpaceCreateDeviceRGB();
+#else
     CGDirectDisplayID mainDisplay = CGMainDisplayID();
     if (mainDisplay == kCGNullDirectDisplay) {
         // Fallback to sRGB
@@ -87,6 +97,7 @@ CGColorSpaceRef get_display_color_space(void) {
     }
     
     return displayColorSpace;
+#endif
 }
 
 // Create ColorSpace from image description

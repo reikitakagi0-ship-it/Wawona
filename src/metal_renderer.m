@@ -4,19 +4,24 @@
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
 #import <QuartzCore/CAMetalLayer.h>
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 #import <IOSurface/IOSurface.h>
+#endif
 #import <simd/simd.h>
 #include "wayland_compositor.h"
 #include "logging.h"
 
 // Forward declaration
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t width, uint32_t height, uint32_t stride, uint32_t format);
+#endif
 
 // Custom MTKView subclass that allows window dragging
 @interface CompositorMTKView : MTKView
 @end
 
 @implementation CompositorMTKView
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 - (BOOL)mouseDownCanMoveWindow {
     // Allow window to be moved by dragging the background
     // This ensures window controls (resize, close, etc.) remain functional
@@ -33,6 +38,7 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
     // Accept mouse moved events for Wayland client input
     return YES;
 }
+#endif
 @end
 
 // Metal renderer implementation for full compositor rendering
@@ -40,7 +46,7 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
 
 @interface MetalSurface : NSObject
 @property (nonatomic, strong) id<MTLTexture> texture;  // Changed to strong for proper retention
-@property (nonatomic, assign) NSRect frame;
+@property (nonatomic, assign) CGRect frame;
 @property (nonatomic, assign) struct wl_surface_impl *surface;
 @property (nonatomic, assign) void *lastBufferData;  // Track buffer to avoid unnecessary recreations
 @property (nonatomic, assign) int32_t lastWidth;
@@ -75,7 +81,9 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
         // The CAMetalLayer will automatically sync with the display refresh rate
         CAMetalLayer *metalLayer = (CAMetalLayer *)_metalView.layer;
         if (metalLayer) {
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
             metalLayer.displaySyncEnabled = YES;  // Sync with display refresh
+#endif
             metalLayer.presentsWithTransaction = NO;  // Use standard presentation
         }
         
@@ -235,7 +243,9 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
         _surfaceTextures = nil;
     }
     
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
     [super dealloc];
+#endif
 }
 
 - (void)renderSurface:(struct wl_surface_impl *)surface {
@@ -243,7 +253,7 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
         return;
     }
     
-    // Get buffer data
+    // Get buffer data - handle both SHM buffers and EGL buffers
     struct buffer_data {
         void *data;
         int32_t offset;
@@ -253,16 +263,62 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
         uint32_t format;
     };
     
-    struct buffer_data *buf_data = wl_resource_get_user_data(surface->buffer_resource);
-    if (!buf_data || !buf_data->data) {
-        return;
+    int32_t width, height, stride;
+    uint32_t format;
+    void *data = NULL;
+    struct wl_shm_buffer *shm_buffer = wl_shm_buffer_get(surface->buffer_resource);
+    struct buffer_data *buf_data = NULL;
+    
+    // First, try to handle as SHM buffer
+    if (shm_buffer) {
+        // Standard Wayland SHM buffer
+        width = wl_shm_buffer_get_width(shm_buffer);
+        height = wl_shm_buffer_get_height(shm_buffer);
+        stride = wl_shm_buffer_get_stride(shm_buffer);
+        format = wl_shm_buffer_get_format(shm_buffer);
+        
+        wl_shm_buffer_begin_access(shm_buffer);
+        data = wl_shm_buffer_get_data(shm_buffer);
+    } else {
+        // Not an SHM buffer - might be EGL buffer or custom buffer with buffer_data
+        buf_data = wl_resource_get_user_data(surface->buffer_resource);
+        
+        if (buf_data && buf_data->data) {
+            // Custom buffer with buffer_data (from wayland_shm.c)
+            width = buf_data->width;
+            height = buf_data->height;
+            stride = buf_data->stride;
+            format = buf_data->format;
+            data = (char *)buf_data->data + buf_data->offset;
+            
+            if ((uintptr_t)data < (uintptr_t)buf_data->data) {
+                NSLog(@"[METAL RENDERER] ❌ Invalid data pointer calculation");
+                return;
+            }
+        } else {
+            // Neither SHM buffer nor custom buffer_data - likely an EGL buffer
+            // EGL buffers are not yet supported for rendering on macOS
+            NSLog(@"[METAL RENDERER] ⚠️ EGL buffer detected but not yet supported - skipping render");
+            
+            // Still send buffer release to client
+            if (!surface->buffer_release_sent) {
+                struct wl_client *release_buffer_client = wl_resource_get_client(surface->buffer_resource);
+                if (release_buffer_client) {
+                    wl_buffer_send_release(surface->buffer_resource);
+                    surface->buffer_release_sent = true;
+                }
+            }
+            return;
+        }
     }
     
-    int32_t width = buf_data->width;
-    int32_t height = buf_data->height;
-    int32_t stride = buf_data->stride;
-    void *data = (char *)buf_data->data + buf_data->offset;
-    uint32_t format = buf_data->format;  // Get format before synchronized block
+    // Verify we have valid data
+    if (!data) {
+        if (shm_buffer) {
+            wl_shm_buffer_end_access(shm_buffer);
+        }
+        return;
+    }
     
     // OPTIMIZED: Check if we can reuse existing texture
     // Only recreate if buffer data pointer, dimensions, or format changed
@@ -354,9 +410,9 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
         
         // For nested compositors (like Weston), ALWAYS scale the surface to fill the entire Metal view
         // Get the Metal view frame (points) to determine the target size
-        NSRect targetFrame = NSMakeRect(surface->x, surface->y, width, height);
+        CGRect targetFrame = CGRectMake(surface->x, surface->y, width, height);
         if (_metalView) {
-            NSRect viewBounds = _metalView.frame;  // Use frame.size (points) not bounds
+            CGRect viewBounds = _metalView.frame;  // Use frame.size (points) not bounds
             
             // ALWAYS scale to fill view for nested compositors
             // The nested compositor's main output should always fill the entire window
@@ -386,7 +442,7 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
                     
                     for (MetalSurface *otherSurface in [_surfaceTextures allValues]) {
                         if (otherSurface != metalSurface && otherSurface.texture) {
-                            NSRect otherFrame = otherSurface.frame;
+                            CGRect otherFrame = otherSurface.frame;
                             NSInteger otherArea = otherFrame.size.width * otherFrame.size.height;
                             if (otherArea > maxSurfaceArea) {
                                 maxSurfaceArea = otherArea;
@@ -420,7 +476,7 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
             if (shouldScaleToFill) {
                 // Scale to fill entire view - this handles nested compositors like Weston
                 // The buffer will be stretched to fill the view
-                targetFrame = NSMakeRect(0, 0, viewBounds.size.width, viewBounds.size.height);
+                targetFrame = CGRectMake(0, 0, viewBounds.size.width, viewBounds.size.height);
                 NSLog(@"[METAL] Scaling surface to fill view: buffer=%dx%d -> view=%.0fx%.0f (surface at %d,%d, viewBounds=%.0fx%.0f)",
                       width, height, viewBounds.size.width, viewBounds.size.height, 
                       surface->x, surface->y, viewBounds.size.width, viewBounds.size.height);
@@ -439,6 +495,11 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
         metalSurface.frame = targetFrame;
     }
     
+    // Release SHM buffer access if we used one
+    if (shm_buffer) {
+        wl_shm_buffer_end_access(shm_buffer);
+    }
+    
     // With continuous rendering enabled (enableSetNeedsDisplay=NO), 
     // we don't need to call setNeedsDisplay: - the view renders automatically
     // However, we can still trigger it if needed for immediate updates
@@ -454,9 +515,6 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
             [_surfaceTextures removeObjectForKey:key];
         }
     }
-    
-    // With continuous rendering enabled, no need to call setNeedsDisplay:
-    // The view will render automatically at display refresh rate
 }
 
 - (void)setNeedsDisplay {
@@ -487,7 +545,11 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
     }
     
     // Trigger redraw immediately - this will cause MTKView to call drawInMTKView:
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    [self.metalView setNeedsDisplay];
+#else
     [self.metalView setNeedsDisplay:YES];
+#endif
     
     // CRITICAL: Force immediate rendering by directly calling the delegate method
     // This bypasses the display link and renders immediately for nested compositor updates
@@ -618,7 +680,7 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
             // Set up viewport for this surface
             // CRITICAL: Use view.frame.size (points) not view.bounds.size for coordinate calculations
             // MTKView automatically handles Retina scaling for drawableSize, but frame/bounds are in points
-            NSRect frame = metalSurface.frame;
+            CGRect frame = metalSurface.frame;
             CGSize viewSize = view.frame.size;  // Use frame.size (points) for coordinate calculations
             
             // Use full-screen viewport (Metal uses normalized device coordinates)

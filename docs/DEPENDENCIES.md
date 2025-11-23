@@ -129,9 +129,14 @@ brew install pixman
 pkg-config --modversion pixman-1
 ```
 
-### KosmicKrisp Vulkan Driver (REQUIRED for DMA-BUF)
+### KosmicKrisp Vulkan Driver (REQUIRED - Hard Dependency)
 
-**⚠️ CRITICAL**: KosmicKrisp is **required** for DMA-BUF support on macOS. The compositor build will fail if it's not installed.
+**⚠️ CRITICAL**: KosmicKrisp is **required** for:
+- DMA-BUF support on macOS
+- EGL support (via Zink driver - OpenGL ES → Vulkan)
+- Hardware-accelerated rendering
+
+The compositor build will fail if it's not installed.
 
 **Installation**:
 ```bash
@@ -141,9 +146,13 @@ make kosmickrisp
 
 This will:
 1. Clone Mesa repository
-2. Build KosmicKrisp driver for macOS
-3. Install to `/opt/homebrew/lib/libvulkan_kosmickrisp.dylib`
-4. Install ICD file to `/opt/homebrew/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json`
+2. Build KosmicKrisp Vulkan driver for macOS
+3. Build EGL with Zink driver (OpenGL ES → Vulkan translation)
+4. Install Vulkan driver to `/opt/homebrew/lib/libvulkan_kosmickrisp.dylib`
+5. Install EGL libraries (`libEGL.dylib`, `libGLESv2.dylib`)
+6. Install ICD file to `/opt/homebrew/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json`
+
+**EGL Support**: EGL is enabled with Zink driver, which translates OpenGL ES calls to Vulkan. Since KosmicKrisp provides Vulkan support, EGL clients will use hardware-accelerated rendering via Vulkan → Metal.
 
 **What this installs**:
 - `libvulkan_kosmickrisp.dylib` - Vulkan-to-Metal driver

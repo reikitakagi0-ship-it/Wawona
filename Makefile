@@ -1,7 +1,7 @@
 # Wawona Compositor Makefile
 # Simplified targets for common operations
 
-.PHONY: help compositor client tartvm-client external-client container-client colima-client clean-remote-socket wayland test uninstall logs clean-compositor clean-client clean-wayland kosmickrisp clone-kosmickrisp build-kosmickrisp install-kosmickrisp clean-kosmickrisp
+.PHONY: help compositor stop-compositor client tartvm-client external-client container-client colima-client colima-client-ios colima-weston-simple-egl colima-wlcs clean-remote-socket wayland xkbcommon libinput weston build-weston-compositor run-weston-compositor clean-weston test uninstall logs clean-compositor clean-client clean-wayland kosmickrisp clean-kosmickrisp test-clients test-wayland-info test-wayland-debug test-simple-shm test-simple-damage test-weston-simple-shm test-weston-simple-egl test-weston-transformed test-weston-subsurfaces test-weston-simple-damage test-weston-simple-touch test-weston-eventdemo test-weston-keyboard test-weston-dnd test-weston-cliptest test-weston-image test-weston-editor debug-compositor-lldb debug-compositor-dyld debug-weston-simple-egl-lldb debug-weston-simple-egl-dyld debug-kosmickrisp-lldb debug-kosmickrisp-dyld debug-full ios-compositor ios-wayland ios-waypipe ios-kosmickrisp ios-build-compositor ios-install-compositor ios-run-compositor clean-ios-compositor
 
 # Default target
 .DEFAULT_GOAL := help
@@ -17,10 +17,18 @@ NC := \033[0m # No Color
 BUILD_DIR := build
 WAYLAND_DIR := wayland
 WAYLAND_BUILD_DIR := $(WAYLAND_DIR)/build
+IOS_BUILD_DIR := build-ios
+IOS_INSTALL_DIR := ios-install
 
 # Binaries
 COMPOSITOR_BIN := $(BUILD_DIR)/Wawona
+IOS_COMPOSITOR_BIN := $(IOS_BUILD_DIR)/Wawona.app/Wawona
 TEST_CLIENT_BIN := macos_wlclient_color_test
+
+# iOS Settings
+IOS_SDK := $(shell xcrun --sdk iphonesimulator --show-sdk-path)
+IOS_BUNDLE_ID := com.aspauldingcode.Wawona
+IOS_DEVICE_ID := $(shell xcrun simctl list devices available | grep "DebugPhone" | grep -oE '[0-9A-F-]{36}' || echo "")
 
 # Environment
 XDG_RUNTIME_DIR ?= $(shell echo $${TMPDIR:-/tmp}/wayland-runtime)
@@ -51,6 +59,16 @@ CONTAINER_RUNTIME_DIR ?= /tmp/container-wayland-runtime
 # Detect Wayland install prefix
 WAYLAND_PREFIX := $(shell if [ -d "/opt/homebrew/lib/pkgconfig" ] && pkg-config --exists wayland-server 2>/dev/null && pkg-config --variable=prefix wayland-server 2>/dev/null | grep -q "/opt/homebrew"; then echo "/opt/homebrew"; elif [ -d "/usr/local/lib/pkgconfig" ] && pkg-config --exists wayland-server 2>/dev/null && pkg-config --variable=prefix wayland-server 2>/dev/null | grep -q "/usr/local"; then echo "/usr/local"; else echo ""; fi)
 
+# KosmicKrisp installation paths (override when running make to avoid sudo)
+KOSMICKRISP_PREFIX ?= /opt/homebrew
+KOSMICKRISP_DESTDIR ?=
+KOSMICKRISP_PREFIX_FULL := $(KOSMICKRISP_DESTDIR)$(KOSMICKRISP_PREFIX)
+KOSMICKRISP_LIB := $(KOSMICKRISP_PREFIX_FULL)/lib
+KOSMICKRISP_INCLUDE := $(KOSMICKRISP_PREFIX_FULL)/include
+KOSMICKRISP_PKGCONFIG := $(KOSMICKRISP_PREFIX_FULL)/lib/pkgconfig
+KOSMICKRISP_ICD := $(KOSMICKRISP_PREFIX_FULL)/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json
+KOSMICKRISP_DRI := $(KOSMICKRISP_LIB)/dri
+
 help:
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
 	@echo "$(BLUE)🔨 Wawona Compositor Makefile$(NC)"
@@ -58,7 +76,8 @@ help:
 	@echo ""
 	@echo "$(GREEN)Available targets:$(NC)"
 	@echo ""
-	@echo "  $(YELLOW)make compositor$(NC)      - Clean, build, and run compositor"
+	@echo "  $(YELLOW)make compositor$(NC)      - Clean, build, and run compositor (background)"
+	@echo "  $(YELLOW)make stop-compositor$(NC) - Stop running compositor"
 	@echo "  $(YELLOW)make client$(NC)           - Clean, build, and run client"
 	@echo "  $(YELLOW)make tartvm-client$(NC)    - Start Fedora VM with shared directory for Wayland"
 	@echo "  $(YELLOW)make external-client$(NC) - Connect external client via waypipe (auto-cleans remote socket)"
@@ -66,16 +85,89 @@ help:
 	@echo "    $(RED)⚠$(NC)  $(YELLOW)Note:$(NC) Does NOT support Unix domain sockets (connection will fail)"
 	@echo "    $(YELLOW)ℹ$(NC)  Use $(GREEN)make colima-client$(NC) for Unix socket support"
 	@echo "  $(YELLOW)make colima-client$(NC) - Run Weston in Colima/Docker container (supports Unix sockets)"
+	@echo "  $(YELLOW)make colima-wlcs$(NC)   - Run Wayland Conformance Test Suite (wlcs) via Colima"
 	@echo "  $(YELLOW)make clean-remote-socket$(NC) - Clean stale Wayland sockets on remote machine"
 	@echo "  $(YELLOW)make external-client EXTERNAL_CLIENT_HOST=host$(NC) - Connect NixOS client via SSH"
-	@echo "  $(YELLOW)make test-clients$(NC)    - Test various Wayland clients (foot, GTK, Qt apps)"
+	@echo "  $(YELLOW)make test-clients$(NC)    - Clean, build, and run all Wayland test clients"
+	@echo "  $(YELLOW)make test-<client>$(NC)   - Run individual test client interactively"
+	@echo "    $(YELLOW)ℹ$(NC)  Press Ctrl+C (SIGTERM) to exit the test client"
+	@echo "    $(YELLOW)ℹ$(NC)  Available clients:"
+	@echo "      • test-wayland-info, test-wayland-debug"
+	@echo "      • test-simple-shm, test-simple-damage"
+	@echo "      • test-weston-simple-shm, test-weston-simple-egl"
+	@echo "      • test-weston-transformed, test-weston-subsurfaces"
+	@echo "      • test-weston-simple-damage, test-weston-simple-touch"
+	@echo "      • test-weston-eventdemo, test-weston-keyboard"
+	@echo "      • test-weston-dnd, test-weston-cliptest"
+	@echo "      • test-weston-image, test-weston-editor"
 	@echo "  $(YELLOW)make test-compositors$(NC) - Test nested compositors (Weston, Sway, GNOME, KDE)"
 	@echo "  $(YELLOW)make wayland$(NC)          - Clean, build, and install Wayland"
-	@echo "  $(YELLOW)make waypipe$(NC)         - Clean, build, and install Rust waypipe (for Wayland forwarding)"
-	@echo "  $(YELLOW)make kosmickrisp$(NC)     - Clone, build, and install KosmicKrisp Vulkan driver for macOS"
+	@echo "  $(YELLOW)make xkbcommon$(NC)        - Build and install xkbcommon (keyboard handling)"
+	@echo "  $(YELLOW)make libinput$(NC)         - Build and install libinput (Linux-specific, may not work on macOS)"
+	@echo "  $(YELLOW)make weston$(NC)           - Build Weston compositor for macOS (nested Wayland backend)"
+	@echo "  $(YELLOW)make waypipe$(NC)         - Clean, build, and install Rust waypipe for macOS and iOS"
+	@echo "    $(YELLOW)ℹ$(NC)  Builds waypipe with dmabuf, video (macOS), lz4, zstd features"
+	@echo "    $(YELLOW)ℹ$(NC)  Requires KosmicKrisp Vulkan driver (use $(GREEN)make kosmickrisp$(NC))"
+	@echo "    $(YELLOW)ℹ$(NC)  macOS binary: /opt/homebrew/bin/waypipe"
+	@echo "    $(YELLOW)ℹ$(NC)  iOS binary: ios-install/bin/waypipe"
+	@echo "  $(YELLOW)make kosmickrisp$(NC)     - Build and install KosmicKrisp Vulkan driver + EGL (Zink) for macOS and iOS"
+	@echo "    $(YELLOW)ℹ$(NC)  Enables EGL/OpenGL ES support via KosmicKrisp+Zink"
+	@echo "    $(YELLOW)ℹ$(NC)  Required for EGL test clients (weston-simple-egl, etc.)"
+	@echo "    $(YELLOW)ℹ$(NC)  Required for waypipe dmabuf/video features"
+	@echo "    $(YELLOW)ℹ$(NC)  macOS: Installs to /opt/homebrew/lib/"
+	@echo "    $(YELLOW)ℹ$(NC)  iOS: Installs to ios-install/lib/"
+	@echo "  $(YELLOW)make ios-compositor$(NC)  - Build and run Wawona on iOS Simulator"
+	@echo "    $(YELLOW)ℹ$(NC)  Builds all dependencies (Wayland, Waypipe, KosmicKrisp) for iOS"
+	@echo "    $(YELLOW)ℹ$(NC)  Compiles Wawona for iOS Simulator and launches it"
+	@echo "    $(YELLOW)ℹ$(NC)  Requires iOS SDK and Xcode command-line tools"
+	@echo "  $(YELLOW)make ios-wayland$(NC)    - Build Wayland libraries for iOS Simulator"
+	@echo "  $(YELLOW)make ios-waypipe$(NC)     - Build Waypipe for iOS Simulator (requires ios-wayland, ios-kosmickrisp)"
+	@echo "  $(YELLOW)make ios-kosmickrisp$(NC) - Build KosmicKrisp Vulkan driver for iOS Simulator (requires ios-wayland)"
+	@echo "  $(YELLOW)make colima-client-ios$(NC) - Connect to iOS Simulator Wawona compositor via waypipe"
+	@echo "    $(YELLOW)ℹ$(NC)  Runs Weston in Docker container, connects to iOS Simulator Wayland socket"
 	@echo "  $(YELLOW)make test$(NC)            - Clean all, build all, install wayland, run both"
 	@echo "  $(YELLOW)make uninstall$(NC)       - Uninstall Wayland"
 	@echo "  $(YELLOW)make logs$(NC)            - Open/view all log files"
+	@echo ""
+	@echo "$(GREEN)Common Workflows:$(NC)"
+	@echo ""
+	@echo "  $(YELLOW)1. First-time setup (macOS):$(NC)"
+	@echo "     $(GREEN)make wayland$(NC)        # Install Wayland for macOS"
+	@echo "     $(GREEN)make kosmickrisp$(NC)     # Install Vulkan+EGL support for macOS and iOS"
+	@echo "     $(GREEN)make waypipe$(NC)         # Install Waypipe for macOS and iOS (requires kosmickrisp)"
+	@echo ""
+	@echo "  $(YELLOW)2. Run compositor (macOS):$(NC)"
+	@echo "     $(GREEN)make compositor$(NC)     # Build and run compositor"
+	@echo "     # Or: $(GREEN)make run-compositor$(NC) in another terminal"
+	@echo ""
+	@echo "  $(YELLOW)3. Test clients (macOS):$(NC)"
+	@echo "     $(GREEN)make test-clients$(NC)   # Run all tests"
+	@echo "     $(GREEN)make test-weston-simple-egl$(NC)  # Run single test interactively"
+	@echo ""
+	@echo "  $(YELLOW)4. iOS Simulator setup:$(NC)"
+	@echo "     $(GREEN)make ios-compositor$(NC)  # Build and run Wawona on iOS Simulator"
+	@echo "     # This builds all iOS dependencies (Wayland, Waypipe, KosmicKrisp)"
+	@echo "     # Or build individually:"
+	@echo "     $(GREEN)make ios-wayland$(NC)     # Build Wayland for iOS"
+	@echo "     $(GREEN)make ios-kosmickrisp$(NC) # Build KosmicKrisp for iOS"
+	@echo "     $(GREEN)make ios-waypipe$(NC)    # Build Waypipe for iOS"
+	@echo ""
+	@echo "  $(YELLOW)5. Connect to iOS Simulator:$(NC)"
+	@echo "     $(GREEN)make colima-client-ios$(NC)  # Run Weston in Docker, connect to iOS Simulator"
+	@echo ""
+	@echo "  $(YELLOW)6. Prerequisites for EGL clients:$(NC)"
+	@echo "     • Run $(GREEN)make kosmickrisp$(NC) to install EGL support"
+	@echo "     • Compositor will auto-detect and use EGL if available"
+	@echo ""
+	@echo "$(GREEN)Platform-specific targets:$(NC)"
+	@echo ""
+	@echo "  $(YELLOW)macOS only:$(NC)"
+	@echo "     $(GREEN)make kosmickrisp-macos$(NC)  # Build KosmicKrisp for macOS only"
+	@echo ""
+	@echo "  $(YELLOW)iOS only:$(NC)"
+	@echo "     $(GREEN)make ios-wayland$(NC)       # Build Wayland for iOS only"
+	@echo "     $(GREEN)make ios-waypipe$(NC)       # Build Waypipe for iOS only"
+	@echo "     $(GREEN)make ios-kosmickrisp$(NC)   # Build KosmicKrisp for iOS only"
 	@echo ""
 
 # Clean compositor build
@@ -307,8 +399,9 @@ compositor: clean-compositor build-compositor
 	echo "$(YELLOW)ℹ$(NC) Socket will be at: $(GREEN)$$XDG_RUNTIME_DIR/$$WAYLAND_DISPLAY$(NC)"; \
 	echo ""
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
-	@echo "$(YELLOW)ℹ$(NC) Press Ctrl+C to stop"
+	@echo "$(YELLOW)ℹ$(NC) Compositor will run in background"
 	@echo "$(YELLOW)ℹ$(NC) Runtime log: /tmp/compositor-run.log"
+	@echo "$(YELLOW)ℹ$(NC) To stop: $(GREEN)make stop-compositor$(NC) or $(GREEN)pkill -f Wawona$(NC)"
 	@echo ""
 	@rm -f /tmp/compositor-run.log
 	@export WAYLAND_DISPLAY="$${WAYLAND_DISPLAY:-wayland-0}"; \
@@ -318,7 +411,23 @@ compositor: clean-compositor build-compositor
 		mkdir -p "$$XDG_RUNTIME_DIR"; \
 		chmod 0700 "$$XDG_RUNTIME_DIR"; \
 		rm -f "$$XDG_RUNTIME_DIR/$$WAYLAND_DISPLAY"; \
-		$(COMPOSITOR_BIN) 2>&1 | grep -v "failed to read client connection (pid 0)" | tee /tmp/compositor-run.log'
+		$(COMPOSITOR_BIN) >/tmp/compositor-run.log 2>&1 & \
+		COMPOSITOR_PID=$$!; \
+		echo "$(GREEN)✓$(NC) Compositor started (PID: $$COMPOSITOR_PID)"; \
+		sleep 0.5; \
+		if kill -0 $$COMPOSITOR_PID 2>/dev/null; then \
+			echo "$(GREEN)✓$(NC) Compositor is running"; \
+			echo "$(YELLOW)ℹ$(NC) Socket: $(GREEN)$$XDG_RUNTIME_DIR/$$WAYLAND_DISPLAY$(NC)"; \
+			echo "$(YELLOW)ℹ$(NC) Log: $(GREEN)/tmp/compositor-run.log$(NC)"; \
+			echo ""; \
+		else \
+			echo "$(RED)✗$(NC) Compositor failed to start"; \
+			if [ -f /tmp/compositor-run.log ]; then \
+				echo "$(YELLOW)ℹ$(NC) Last log entries:"; \
+				tail -20 /tmp/compositor-run.log; \
+			fi; \
+			exit 1; \
+		fi'
 
 # Debug target: rebuild compositor and run under lldb with stdout/stderr attached
 debug-compositor: clean-compositor build-compositor
@@ -626,7 +735,10 @@ external-client:
 	echo ""; \
 	echo -e "$(YELLOW)ℹ$(NC) Connecting..."; \
 	echo ""; \
-	WAYLAND_DISPLAY="$$WAYLAND_DISPLAY" XDG_RUNTIME_DIR="$$XDG_RUNTIME_DIR" waypipe ssh $$EXTERNAL_USER@$$EXTERNAL_HOST foot'
+	echo -e "$(YELLOW)ℹ$(NC) Using compression: $(GREEN)lz4$(NC) (default)"; \
+	echo -e "$(YELLOW)ℹ$(NC) For better compression, use: $(GREEN)waypipe -c zstd ssh ...$(NC)"; \
+	echo ""; \
+	WAYLAND_DISPLAY="$$WAYLAND_DISPLAY" XDG_RUNTIME_DIR="$$XDG_RUNTIME_DIR" waypipe -c lz4 ssh $$EXTERNAL_USER@$$EXTERNAL_HOST foot'
 
 # Container client: Run Weston in macOS Containerization.framework container
 # Uses Alpine Linux (lightweight) and shares Wayland socket directly (no waypipe)
@@ -646,6 +758,58 @@ container-client:
 
 colima-client:
 	@$(shell pwd)/scripts/colima-client.sh
+
+colima-client-ios:
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶$(NC) Connecting to iOS Simulator Wawona Compositor"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@IOS_SIMULATOR_MODE=1 $(shell pwd)/scripts/colima-client.sh 2>&1 || { \
+		echo ""; \
+		echo "$(RED)✗$(NC) Failed to connect to iOS Simulator Wawona"; \
+		echo ""; \
+		echo "$(YELLOW)ℹ$(NC) Common issues:"; \
+		echo "  1. Wawona is not running in iOS Simulator"; \
+		echo "  2. Wayland socket not created yet"; \
+		echo ""; \
+		echo "$(YELLOW)ℹ$(NC) Try:"; \
+		echo "  make ios-compositor"; \
+		echo ""; \
+		echo "$(YELLOW)ℹ$(NC) For detailed error, run:"; \
+		echo "  IOS_SIMULATOR_MODE=1 bash scripts/colima-client.sh"; \
+		echo ""; \
+		exit 1; \
+	}
+
+colima-weston-simple-egl:
+	@$(shell pwd)/scripts/colima-weston-simple-egl.sh
+
+# Stop compositor
+stop-compositor:
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶$(NC) Stopping Compositor"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@KILLED=0; \
+	for PID in $$(pgrep -f "Wawona" 2>/dev/null || true); do \
+		if [ -n "$$PID" ] && kill -TERM $$PID 2>/dev/null; then \
+			echo "$(YELLOW)⚠$(NC) Sent TERM to compositor process $$PID"; \
+			KILLED=$$((KILLED + 1)); \
+		fi; \
+	done; \
+	if [ $$KILLED -gt 0 ]; then \
+		sleep 1; \
+		for PID in $$(pgrep -f "Wawona" 2>/dev/null || true); do \
+			if [ -n "$$PID" ] && kill -9 $$PID 2>/dev/null; then \
+				echo "$(YELLOW)⚠$(NC) Force killed remaining process $$PID"; \
+			fi; \
+		done; \
+		echo "$(GREEN)✓$(NC) Compositor stopped"; \
+	else \
+		echo "$(YELLOW)ℹ$(NC) No compositor process found"; \
+	fi
+
+# Wayland Conformance Test Suite (wlcs) via Colima
+colima-wlcs:
+	@$(shell pwd)/scripts/colima-wlcs.sh
 
 # Clean remote Wayland sockets (on remote machine via SSH)
 clean-remote-socket:
@@ -679,8 +843,113 @@ wayland: clean-wayland
 	@rm -f wayland-install.log
 	@./install-wayland.sh < /dev/null 2>&1 | tee wayland-install.log
 
+# xkbcommon: build and install (required for keyboard handling)
+xkbcommon:
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶$(NC) Building xkbcommon"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@bash scripts/build-xkbcommon.sh
+
+# libinput: build and install (Linux-specific, may not work on macOS)
+libinput:
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶$(NC) Building libinput"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@bash scripts/build-libinput.sh
+
+# Weston: build full compositor for macOS (nested Wayland backend)
+weston: clean-weston build-weston-compositor run-weston-compositor
+
+build-weston-compositor:
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶$(NC) Building Weston Compositor"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@bash scripts/build-weston-compositor.sh
+
+run-weston-compositor:
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶$(NC) Running Weston Compositor"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@if [ ! -f "weston-install/bin/weston" ]; then \
+		echo "$(RED)✗$(NC) Weston compositor not built. Build failed."; \
+		exit 1; \
+	fi
+	@bash -c '\
+		export WAYLAND_DISPLAY="$${WAYLAND_DISPLAY:-wayland-0}"; \
+		export XDG_RUNTIME_DIR="$${XDG_RUNTIME_DIR:-/tmp/wayland-runtime}"; \
+		XDG_RUNTIME_DIR=$$(echo "$$XDG_RUNTIME_DIR" | sed "s#//#/#g"); \
+		rm -rf "$$XDG_RUNTIME_DIR"; \
+		mkdir -p "$$XDG_RUNTIME_DIR"; \
+		chmod 0700 "$$XDG_RUNTIME_DIR"; \
+		if [ ! -S "$$XDG_RUNTIME_DIR/$$WAYLAND_DISPLAY" ]; then \
+			echo "$(YELLOW)ℹ$(NC) Starting Wawona compositor..."; \
+			WAYLAND_DISPLAY="$$WAYLAND_DISPLAY" \
+			 XDG_RUNTIME_DIR="$$XDG_RUNTIME_DIR" \
+			 $(COMPOSITOR_BIN) >/tmp/wawona-for-weston.log 2>&1 & \
+			COMPOSITOR_PID=$$!; \
+			sleep 3; \
+			if ! kill -0 $$COMPOSITOR_PID 2>/dev/null; then \
+				echo "$(RED)✗$(NC) Compositor failed to start. Check /tmp/wawona-for-weston.log"; \
+				if [ -f /tmp/wawona-for-weston.log ]; then \
+					tail -30 /tmp/wawona-for-weston.log; \
+				fi; \
+				exit 1; \
+			fi; \
+			for i in 1 2 3 4 5; do \
+				if [ -S "$$XDG_RUNTIME_DIR/$$WAYLAND_DISPLAY" ]; then \
+					break; \
+				fi; \
+				sleep 1; \
+			done; \
+			if [ ! -S "$$XDG_RUNTIME_DIR/$$WAYLAND_DISPLAY" ]; then \
+				echo "$(RED)✗$(NC) Compositor socket not created after 8 seconds. Check /tmp/wawona-for-weston.log"; \
+				if [ -f /tmp/wawona-for-weston.log ]; then \
+					tail -30 /tmp/wawona-for-weston.log; \
+				fi; \
+				kill $$COMPOSITOR_PID 2>/dev/null || true; \
+				exit 1; \
+			fi; \
+			chmod 0700 "$$XDG_RUNTIME_DIR"; \
+			echo "$(GREEN)✓$(NC) Compositor started (PID: $$COMPOSITOR_PID)"; \
+		fi; \
+		echo "$(YELLOW)ℹ$(NC) Running Weston nested within Wawona..."; \
+		echo "$(YELLOW)ℹ$(NC) Socket: $(GREEN)$$XDG_RUNTIME_DIR/$$WAYLAND_DISPLAY$(NC)"; \
+		echo "$(YELLOW)ℹ$(NC) To stop: Ctrl+C"; \
+		echo ""; \
+		trap "kill $$COMPOSITOR_PID 2>/dev/null || true" EXIT INT TERM; \
+		WAYLAND_DISPLAY="$$WAYLAND_DISPLAY" \
+		 XDG_RUNTIME_DIR="$$XDG_RUNTIME_DIR" \
+		 WESTON_LOG_SCOPE="*" \
+		 "weston-install/bin/weston" --backend=wayland --no-config --idle-time=0 --output-count=1 --width=1024 --height=768 2>&1; \
+		EXIT_CODE=$$?; \
+		echo ""; \
+		if [ $$EXIT_CODE -eq 130 ]; then \
+			echo "$(GREEN)✓$(NC) Weston stopped (Ctrl+C)"; \
+		elif [ $$EXIT_CODE -eq 0 ]; then \
+			echo "$(GREEN)✓$(NC) Weston exited normally"; \
+		else \
+			echo "$(YELLOW)⚠$(NC) Weston exited with code $$EXIT_CODE"; \
+			echo "$(YELLOW)ℹ$(NC) This may indicate an initialization error. Check output above for details."; \
+			echo "$(YELLOW)ℹ$(NC) The signalfd warnings are expected on macOS and harmless."; \
+		fi; \
+		kill $$COMPOSITOR_PID 2>/dev/null || true; \
+	'
+
+# Clean Weston build
+clean-weston:
+	@echo "$(YELLOW)ℹ$(NC) Cleaning Weston build..."
+	@if [ -d "weston/build" ]; then \
+		rm -rf weston/build; \
+		echo "$(GREEN)✓$(NC) Cleaned Weston build directory"; \
+	fi
+	@if [ -d "weston-install" ]; then \
+		rm -rf weston-install; \
+		echo "$(GREEN)✓$(NC) Removed Weston install directory: weston-install"; \
+	fi
+
 # Waypipe: clean, build, install (for Wayland forwarding over SSH)
-waypipe: clean-waypipe build-waypipe install-waypipe
+waypipe: clean-waypipe build-waypipe install-waypipe ios-waypipe
+	@echo "$(GREEN)✓$(NC) Waypipe built for macOS and iOS"
 
 build-waypipe:
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
@@ -832,40 +1101,63 @@ clean-waypipe:
 	fi
 	@rm -f waypipe-build.log waypipe-install.log
 
-# KosmicKrisp: clone, build, install Vulkan driver for macOS
-kosmickrisp: clean-kosmickrisp clone-kosmickrisp build-kosmickrisp install-kosmickrisp
+# KosmicKrisp: clean, clone, build, and install Vulkan driver for macOS (with EGL support via Zink)
+kosmickrisp: kosmickrisp-macos kosmickrisp-ios
+	@echo "$(GREEN)✓$(NC) KosmicKrisp built for macOS and iOS"
 
-clone-kosmickrisp:
+kosmickrisp-macos:
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
-	@echo "$(BLUE)▶$(NC) Cloning KosmicKrisp Driver"
+	@echo "$(BLUE)▶$(NC) Building KosmicKrisp Vulkan Driver for macOS (with EGL support)"
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo ""
+	@echo "$(YELLOW)ℹ$(NC) Step 1: Cleaning previous build..."
+	@if [ -d "kosmickrisp/build" ]; then \
+		echo "$(YELLOW)ℹ$(NC) Removing build directory..."; \
+		cd kosmickrisp && \
+		if rm -rf build 2>/dev/null; then \
+			echo "$(GREEN)✓$(NC) Cleaned KosmicKrisp build directory"; \
+		elif sudo rm -rf build 2>/dev/null; then \
+			echo "$(GREEN)✓$(NC) Cleaned KosmicKrisp build directory (used sudo)"; \
+		else \
+			echo "$(YELLOW)⚠$(NC) Could not fully remove build directory (permission issues)"; \
+			echo "$(YELLOW)ℹ$(NC) Meson will handle this with --wipe flag"; \
+		fi; \
+	fi
+	@rm -f kosmickrisp-build.log kosmickrisp-install.log kosmickrisp-clone.log
+	@echo ""
+	@echo "$(YELLOW)ℹ$(NC) Step 2: Cloning/updating Mesa repository..."
 	@if [ -d "kosmickrisp" ]; then \
 		echo "$(GREEN)✓$(NC) KosmicKrisp directory already exists"; \
 		echo "$(YELLOW)ℹ$(NC) Updating repository..."; \
-		cd kosmickrisp && git pull 2>&1 | grep -E "(Already up to date|Updating|error)" || true; \
+		cd kosmickrisp && \
+		if [ -n "$$(git status --porcelain)" ]; then \
+			echo "$(YELLOW)ℹ$(NC) Stashing local changes..."; \
+			git stash push -m "Wawona local changes preserved by make kosmickrisp" >/dev/null 2>&1 || true; \
+			HAD_STASH=true; \
+		else \
+			HAD_STASH=false; \
+		fi; \
+		git pull 2>&1 | grep -E "(Already up to date|Updating|error)" || true; \
+		if [ "$$HAD_STASH" = "true" ]; then \
+			echo "$(YELLOW)ℹ$(NC) Reapplying local changes..."; \
+			git stash pop >/dev/null 2>&1 || { \
+				echo "$(YELLOW)⚠$(NC) Some local changes may have conflicts - check manually if needed"; \
+				git stash list | head -1; \
+			}; \
+		fi; \
 	else \
 		echo "$(YELLOW)ℹ$(NC) Cloning Mesa repository (KosmicKrisp driver merged in Mesa 26.0)..."; \
 		echo "$(YELLOW)ℹ$(NC) KosmicKrisp is a Vulkan-to-Metal driver for macOS (merged October 2025)"; \
 		git clone --depth 1 --branch main https://gitlab.freedesktop.org/mesa/mesa.git kosmickrisp 2>&1 | tee kosmickrisp-clone.log || { \
 			echo "$(RED)✗$(NC) Failed to clone Mesa repository"; \
 			echo "$(YELLOW)ℹ$(NC) Please check KOSMICKRISP.md for alternative repository URLs"; \
-			echo "$(YELLOW)ℹ$(NC) You may need to manually clone the repository"; \
 			cat kosmickrisp-clone.log 2>/dev/null || true; \
 			exit 1; \
 		}; \
 		echo "$(GREEN)✓$(NC) Cloned Mesa repository"; \
-		echo "$(YELLOW)ℹ$(NC) KosmicKrisp driver provides Vulkan 1.3 conformance on Apple hardware"; \
 	fi
-
-build-kosmickrisp: clone-kosmickrisp
-	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
-	@echo "$(BLUE)▶$(NC) Building KosmicKrisp Driver"
-	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
-	@if [ ! -d "kosmickrisp" ]; then \
-		echo "$(RED)✗$(NC) KosmicKrisp directory not found"; \
-		exit 1; \
-	fi
-	@echo "$(YELLOW)ℹ$(NC) Checking build dependencies..."
+	@echo ""
+	@echo "$(YELLOW)ℹ$(NC) Step 3: Checking build dependencies..."
 	@MISSING_DEPS=0; \
 	if ! command -v meson >/dev/null 2>&1; then \
 		echo "$(RED)✗$(NC) meson not found"; \
@@ -932,16 +1224,26 @@ build-kosmickrisp: clone-kosmickrisp
 	fi
 	@echo ""
 	@echo "$(YELLOW)ℹ$(NC) Configuring KosmicKrisp build for macOS..."
-	@if [ ! -d "kosmickrisp/build" ]; then \
-		echo "$(YELLOW)ℹ$(NC) Configuring Mesa with KosmicKrisp driver (Mesa 26.0+)..."; \
+	@echo "$(YELLOW)ℹ$(NC) Configuring Mesa with KosmicKrisp driver (Mesa 26.0+)..."; \
 		cd kosmickrisp && \
+	if [ -d "build" ] && [ ! -f "build/build.ninja" ]; then \
+		echo "$(YELLOW)ℹ$(NC) Removing invalid build directory (may require sudo)..."; \
+		rm -rf build 2>/dev/null || sudo rm -rf build 2>/dev/null || true; \
+	fi; \
+	PATH=/opt/homebrew/opt/bison/bin:$$PATH \
 		LLVM_CONFIG=/opt/homebrew/opt/llvm/bin/llvm-config \
 		PKG_CONFIG_PATH=/opt/homebrew/lib/pkgconfig:$$PKG_CONFIG_PATH \
 		meson setup build \
-			--prefix=/opt/homebrew \
-			-Dplatforms=macos \
+		--prefix=$(KOSMICKRISP_PREFIX) \
+		--wipe \
+			-Dplatforms=macos,wayland \
 			-Dvulkan-drivers=kosmickrisp \
-			-Dgallium-drivers= \
+		-Dgallium-drivers=zink \
+		-Degl=enabled \
+		-Dgles1=enabled \
+		-Dgles2=enabled \
+		-Dglx=disabled \
+		-Dmoltenvk-dir=$$(brew --prefix molten-vk) \
 			-Dvulkan-layers='[]' \
 			-Dtools='[]' \
 			2>&1 | tee ../kosmickrisp-build.log || { \
@@ -949,62 +1251,299 @@ build-kosmickrisp: clone-kosmickrisp
 			echo "$(YELLOW)ℹ$(NC) Note: KosmicKrisp requires Mesa 26.0+ (merged October 2025)"; \
 			exit 1; \
 		}; \
-		echo "$(GREEN)✓$(NC) Meson configuration complete"; \
-	else \
-		echo "$(GREEN)✓$(NC) Build directory already exists"; \
-	fi
+	echo "$(GREEN)✓$(NC) Meson configuration complete"
 	@echo ""
 	@echo "$(YELLOW)ℹ$(NC) Building KosmicKrisp driver..."
 	@cd kosmickrisp && \
-		ninja -C build 2>&1 | tee -a ../kosmickrisp-build.log || { \
-			echo "$(RED)✗$(NC) Build failed - see kosmickrisp-build.log"; \
+		PATH=/opt/homebrew/opt/bison/bin:$$PATH \
+		LLVM_CONFIG=/opt/homebrew/opt/llvm/bin/llvm-config \
+		PKG_CONFIG_PATH=/opt/homebrew/lib/pkgconfig:$$PKG_CONFIG_PATH \
+		ninja -C build 2>&1 | tee -a ../kosmickrisp-build.log; \
+	BUILD_EXIT=$${PIPESTATUS[0]}; \
+	if [ $$BUILD_EXIT -ne 0 ]; then \
+		echo "$(RED)✗$(NC) Build failed (exit code $$BUILD_EXIT) - see kosmickrisp-build.log"; \
 			exit 1; \
-		}
-	@echo "$(GREEN)✓$(NC) Build complete"
-
-install-kosmickrisp: build-kosmickrisp
-	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
-	@echo "$(BLUE)▶$(NC) Installing KosmicKrisp Driver"
-	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
-	@if [ ! -d "kosmickrisp/build" ]; then \
-		echo "$(RED)✗$(NC) Build directory not found - run $(YELLOW)make build-kosmickrisp$(NC) first"; \
-		exit 1; \
 	fi
-	@echo "$(YELLOW)ℹ$(NC) Installing to /opt/homebrew..."
+	@echo "$(GREEN)✓$(NC) Build complete"
+	@echo ""
+	@echo "$(YELLOW)ℹ$(NC) Step 3b: Uninstalling previous installation..."
+	@UNINSTALL_CMD=""; \
+	if [ -z "$(KOSMICKRISP_DESTDIR)" ]; then \
+		case "$(KOSMICKRISP_PREFIX)" in \
+			/opt/homebrew|/usr/local|/usr) \
+				UNINSTALL_CMD="sudo"; \
+				;; \
+		esac; \
+	fi; \
+	REMOVED=0; \
+	echo "$(YELLOW)ℹ$(NC) Removing previously installed KosmicKrisp components..."; \
+	for lib in libvulkan_kosmickrisp.dylib libEGL.dylib libEGL.1.dylib libGLESv1_CM.dylib libGLESv1_CM.1.dylib libGLESv2.dylib libGLESv2.2.dylib libgallium-26.0.0-devel.dylib; do \
+		if [ -f "$(KOSMICKRISP_LIB)/$$lib" ]; then \
+			$$UNINSTALL_CMD rm -f "$(KOSMICKRISP_LIB)/$$lib" 2>/dev/null && REMOVED=$$((REMOVED + 1)); \
+		fi; \
+	done; \
+	for icd in kosmickrisp_mesa_icd.aarch64.json kosmickrisp_icd.json; do \
+		if [ -f "$(KOSMICKRISP_PREFIX_FULL)/share/vulkan/icd.d/$$icd" ]; then \
+			$$UNINSTALL_CMD rm -f "$(KOSMICKRISP_PREFIX_FULL)/share/vulkan/icd.d/$$icd" 2>/dev/null && REMOVED=$$((REMOVED + 1)); \
+		fi; \
+	done; \
+	for pc in egl.pc glesv1_cm.pc glesv2.pc dri.pc; do \
+		if [ -f "$(KOSMICKRISP_PKGCONFIG)/$$pc" ]; then \
+			$$UNINSTALL_CMD rm -f "$(KOSMICKRISP_PKGCONFIG)/$$pc" 2>/dev/null && REMOVED=$$((REMOVED + 1)); \
+		fi; \
+	done; \
+	if [ -d "$(KOSMICKRISP_DRI)" ]; then \
+		$$UNINSTALL_CMD rm -rf "$(KOSMICKRISP_DRI)"/*.dylib 2>/dev/null && REMOVED=$$((REMOVED + 1)); \
+	fi; \
+	if [ -d "$(KOSMICKRISP_PREFIX_FULL)/share/drirc.d" ]; then \
+		$$UNINSTALL_CMD rm -f "$(KOSMICKRISP_PREFIX_FULL)/share/drirc.d"/*.conf 2>/dev/null && REMOVED=$$((REMOVED + 1)); \
+	fi; \
+	if [ $$REMOVED -gt 0 ]; then \
+		echo "$(GREEN)✓$(NC) Removed $$REMOVED previously installed component(s)"; \
+	else \
+		echo "$(GREEN)✓$(NC) No previous installation found (clean install)"; \
+	fi
+	@echo ""
+	@echo "$(YELLOW)ℹ$(NC) Step 4: Installing KosmicKrisp driver..."
+	@echo "$(YELLOW)ℹ$(NC) Installing to $(KOSMICKRISP_PREFIX_FULL)..."
 	@cd kosmickrisp && \
-		sudo ninja -C build install 2>&1 | tee -a ../kosmickrisp-install.log || { \
-			echo "$(RED)✗$(NC) Installation failed - see kosmickrisp-install.log"; \
-			echo "$(YELLOW)ℹ$(NC) You may need to run with sudo or adjust permissions"; \
+		PATH=/opt/homebrew/opt/bison/bin:$$PATH \
+		LLVM_CONFIG=/opt/homebrew/opt/llvm/bin/llvm-config \
+		PKG_CONFIG_PATH=/opt/homebrew/lib/pkgconfig:$$PKG_CONFIG_PATH \
+		INSTALL_CMD=""; \
+		if [ -n "$(KOSMICKRISP_DESTDIR)" ]; then \
+			INSTALL_CMD="meson install -C build --destdir \"$(KOSMICKRISP_DESTDIR)\""; \
+		else \
+			INSTALL_CMD="meson install -C build"; \
+			case "$(KOSMICKRISP_PREFIX)" in \
+				/opt/homebrew|/usr/local|/usr) \
+					echo "$(YELLOW)ℹ$(NC) Installing to system directory - will use sudo"; \
+					INSTALL_CMD="sudo $$INSTALL_CMD"; \
+					;; \
+			esac; \
+		fi; \
+		echo "$(YELLOW)ℹ$(NC) Running: $$INSTALL_CMD"; \
+		$$INSTALL_CMD 2>&1 | tee -a ../kosmickrisp-install.log; \
+		INSTALL_EXIT=$${PIPESTATUS[0]}; \
+		if [ $$INSTALL_EXIT -ne 0 ]; then \
+			echo "$(RED)✗$(NC) Installation failed (exit code $$INSTALL_EXIT) - see kosmickrisp-install.log"; \
+			echo "$(YELLOW)ℹ$(NC) You may need to run with sudo or set KOSMICKRISP_DESTDIR to a writable location"; \
+			echo "$(YELLOW)ℹ$(NC) Last 20 lines of install log:"; \
+			tail -20 ../kosmickrisp-install.log | grep -E "(error|Error|ERROR|failed|Failed|FAILED|Installing)" || tail -20 ../kosmickrisp-install.log; \
 			exit 1; \
-		}
+		fi
+	@echo "$(GREEN)✓$(NC) Meson installation completed"
+	@echo "$(YELLOW)ℹ$(NC) Verifying installed files in $(KOSMICKRISP_PREFIX_FULL)..."
+	@INSTALLED_COUNT=0; \
+	for file in "$(KOSMICKRISP_LIB)/libvulkan_kosmickrisp.dylib" "$(KOSMICKRISP_LIB)/libEGL.dylib" "$(KOSMICKRISP_LIB)/libGLESv2.dylib"; do \
+		if [ -f "$$file" ]; then \
+			echo "$(GREEN)✓$(NC) Found: $$file"; \
+			INSTALLED_COUNT=$$((INSTALLED_COUNT + 1)); \
+		else \
+			echo "$(YELLOW)⚠$(NC) Not found: $$file"; \
+		fi; \
+	done; \
+	if [ $$INSTALLED_COUNT -eq 0 ]; then \
+		echo "$(YELLOW)⚠$(NC) No expected libraries found in $(KOSMICKRISP_LIB)/"; \
+		echo "$(YELLOW)ℹ$(NC) Checking what Meson actually installed..."; \
+		if [ -z "$(KOSMICKRISP_DESTDIR)" ]; then \
+			echo "$(YELLOW)ℹ$(NC) Checking $(KOSMICKRISP_PREFIX)/lib/ for recently installed files..."; \
+			find "$(KOSMICKRISP_PREFIX)/lib" -name "*.dylib" -newer kosmickrisp/build/meson-private/install.dat 2>/dev/null | head -10 || \
+			find "$(KOSMICKRISP_PREFIX)/lib" -name "*vulkan*" -o -name "*EGL*" -o -name "*GLES*" 2>/dev/null | head -10; \
+		fi; \
+		echo "$(YELLOW)ℹ$(NC) Checking build directory for built libraries..."; \
+		find kosmickrisp/build -name "*.dylib" -type f 2>/dev/null | grep -E "(vulkan|EGL|GLES)" | head -5 || echo "No matching .dylib files found in build directory"; \
+	fi
 	@echo "$(GREEN)✓$(NC) KosmicKrisp driver installed"
 	@echo ""
-	@echo "$(YELLOW)ℹ$(NC) Verifying installation..."
-	@ICD_FOUND=0; \
-	if [ -f "/opt/homebrew/share/vulkan/icd.d/kosmickrisp_icd.json" ]; then \
-		echo "$(GREEN)✓$(NC) KosmicKrisp Vulkan ICD found: kosmickrisp_icd.json"; \
-		ICD_FOUND=1; \
+	@echo "$(YELLOW)ℹ$(NC) Step 4b: Ensuring Gallium library is accessible..."
+	@GALLIUM_LIB=""; \
+	if [ -f "$(KOSMICKRISP_DRI)/libgallium-26.0.0-devel.dylib" ]; then \
+		GALLIUM_LIB="$(KOSMICKRISP_DRI)/libgallium-26.0.0-devel.dylib"; \
+	elif [ -f "kosmickrisp/build/src/gallium/targets/dri/libgallium-26.0.0-devel.dylib" ]; then \
+		GALLIUM_LIB="kosmickrisp/build/src/gallium/targets/dri/libgallium-26.0.0-devel.dylib"; \
 	fi; \
-	if [ -f "/opt/homebrew/lib/libvulkan_kosmickrisp.dylib" ] || [ -f "/opt/homebrew/lib/libvulkan_kosmickrisp.so" ]; then \
-		echo "$(GREEN)✓$(NC) KosmicKrisp Vulkan driver library found"; \
-		ICD_FOUND=1; \
-	fi; \
-	# Check for panfrost-based driver (if KosmicKrisp uses panfrost backend) \
-	if [ -f "/opt/homebrew/share/vulkan/icd.d/panfrost_icd.json" ]; then \
-		echo "$(GREEN)✓$(NC) Panfrost Vulkan ICD found (may be KosmicKrisp backend)"; \
-		ICD_FOUND=1; \
-	fi; \
-	if [ $$ICD_FOUND -eq 0 ]; then \
-		echo "$(YELLOW)⚠$(NC) Vulkan ICD not found in expected location"; \
-		echo "$(YELLOW)ℹ$(NC) Checking /opt/homebrew/share/vulkan/icd.d/..."; \
-		ls -la /opt/homebrew/share/vulkan/icd.d/ 2>/dev/null || echo "$(YELLOW)ℹ$(NC) ICD directory does not exist"; \
-		echo "$(YELLOW)ℹ$(NC) Check /opt/homebrew/lib/ for driver libraries..."; \
-		ls -la /opt/homebrew/lib/libvulkan*.dylib 2>/dev/null | head -5 || true; \
+	if [ -n "$$GALLIUM_LIB" ] && [ ! -f "$(KOSMICKRISP_LIB)/libgallium-26.0.0-devel.dylib" ]; then \
+		echo "$(YELLOW)ℹ$(NC) Copying Gallium library to $(KOSMICKRISP_LIB)..."; \
+		if [ -z "$(KOSMICKRISP_DESTDIR)" ]; then \
+			case "$(KOSMICKRISP_PREFIX)" in \
+				/opt/homebrew|/usr/local|/usr) \
+					sudo cp "$$GALLIUM_LIB" "$(KOSMICKRISP_LIB)/libgallium-26.0.0-devel.dylib" 2>/dev/null || { \
+						echo "$(YELLOW)⚠$(NC) Could not copy Gallium library - you may need to run: sudo cp $$GALLIUM_LIB $(KOSMICKRISP_LIB)/"; \
+					}; \
+					;; \
+				*) \
+					cp "$$GALLIUM_LIB" "$(KOSMICKRISP_LIB)/libgallium-26.0.0-devel.dylib" 2>/dev/null || true; \
+					;; \
+			esac; \
+		else \
+			cp "$$GALLIUM_LIB" "$(KOSMICKRISP_LIB)/libgallium-26.0.0-devel.dylib" 2>/dev/null || true; \
+		fi; \
+		if [ -f "$(KOSMICKRISP_LIB)/libgallium-26.0.0-devel.dylib" ]; then \
+			echo "$(GREEN)✓$(NC) Gallium library installed"; \
+		fi; \
+	elif [ -f "$(KOSMICKRISP_LIB)/libgallium-26.0.0-devel.dylib" ]; then \
+		echo "$(GREEN)✓$(NC) Gallium library already in place"; \
+	else \
+		echo "$(YELLOW)⚠$(NC) Gallium library not found - EGL/OpenGL ES may not work"; \
 	fi
 	@echo ""
-	@echo "$(GREEN)✓$(NC) Installation complete!"
-	@echo "$(YELLOW)ℹ$(NC) You can now use Vulkan with waypipe dmabuf and video features"
+	@echo "$(YELLOW)ℹ$(NC) Step 5: Verifying installation..."
+	@VULKAN_OK=false; \
+	EGL_OK=false; \
+	GLES_OK=false; \
+	echo ""; \
+	echo "$(YELLOW)ℹ$(NC) Checking Vulkan driver..."; \
+	if [ -f "$(KOSMICKRISP_LIB)/libvulkan_kosmickrisp.dylib" ]; then \
+		echo "$(GREEN)✓$(NC) Vulkan driver library found: libvulkan_kosmickrisp.dylib"; \
+		VULKAN_OK=true; \
+	else \
+		echo "$(RED)✗$(NC) Vulkan driver library NOT found: libvulkan_kosmickrisp.dylib"; \
+	fi; \
+	if [ -f "$(KOSMICKRISP_ICD)" ] || [ -f "$(KOSMICKRISP_PREFIX_FULL)/share/vulkan/icd.d/kosmickrisp_icd.json" ]; then \
+		echo "$(GREEN)✓$(NC) Vulkan ICD file found"; \
+		VULKAN_OK=true; \
+	else \
+		echo "$(RED)✗$(NC) Vulkan ICD file NOT found"; \
+	fi; \
+	echo ""; \
+	echo "$(YELLOW)ℹ$(NC) Checking EGL library..."; \
+	if [ -f "$(KOSMICKRISP_LIB)/libEGL.dylib" ]; then \
+		echo "$(GREEN)✓$(NC) EGL library found: libEGL.dylib"; \
+		EGL_OK=true; \
+	else \
+		echo "$(RED)✗$(NC) EGL library NOT found: libEGL.dylib"; \
+	fi; \
+	if PKG_CONFIG_PATH=$(KOSMICKRISP_PKGCONFIG):$$PKG_CONFIG_PATH pkg-config --exists egl 2>/dev/null; then \
+		EGL_VERSION=$$(PKG_CONFIG_PATH=$(KOSMICKRISP_PKGCONFIG):$$PKG_CONFIG_PATH pkg-config --modversion egl 2>/dev/null || echo "unknown"); \
+		echo "$(GREEN)✓$(NC) EGL pkg-config found (version: $$EGL_VERSION)"; \
+		EGL_OK=true; \
+	else \
+		echo "$(YELLOW)⚠$(NC) EGL pkg-config not found (may need PKG_CONFIG_PATH set)"; \
+	fi; \
+	echo ""; \
+	echo "$(YELLOW)ℹ$(NC) Checking Gallium driver library..."; \
+	if [ -f "$(KOSMICKRISP_LIB)/libgallium-26.0.0-devel.dylib" ]; then \
+		echo "$(GREEN)✓$(NC) Gallium driver library found: libgallium-26.0.0-devel.dylib"; \
+		EGL_OK=true; \
+		GLES_OK=true; \
+	elif [ -f "$(KOSMICKRISP_DRI)/libgallium-26.0.0-devel.dylib" ]; then \
+		echo "$(YELLOW)⚠$(NC) Gallium library found in DRI directory but not in lib directory"; \
+		echo "$(YELLOW)ℹ$(NC) This may cause EGL/OpenGL ES to fail - library should be in $(KOSMICKRISP_LIB)/"; \
+	else \
+		echo "$(RED)✗$(NC) Gallium driver library NOT found: libgallium-26.0.0-devel.dylib"; \
+		echo "$(YELLOW)ℹ$(NC) EGL/OpenGL ES will not work without this library"; \
+	fi; \
+	echo ""; \
+	echo "$(YELLOW)ℹ$(NC) Checking OpenGL ES libraries..."; \
+	if [ -f "$(KOSMICKRISP_LIB)/libGLESv2.dylib" ]; then \
+		echo "$(GREEN)✓$(NC) OpenGL ES 2.0 library found: libGLESv2.dylib"; \
+		GLES_OK=true; \
+	else \
+		echo "$(RED)✗$(NC) OpenGL ES 2.0 library NOT found: libGLESv2.dylib"; \
+	fi; \
+	if [ -f "$(KOSMICKRISP_LIB)/libGLESv1_CM.dylib" ]; then \
+		echo "$(GREEN)✓$(NC) OpenGL ES 1.0 library found: libGLESv1_CM.dylib"; \
+		GLES_OK=true; \
+	else \
+		echo "$(YELLOW)⚠$(NC) OpenGL ES 1.0 library not found (optional)"; \
+	fi; \
+	echo ""; \
+	if [ "$$VULKAN_OK" = false ]; then \
+		echo "$(RED)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"; \
+		echo "$(RED)✗$(NC) VERIFICATION FAILED: Vulkan driver not found"; \
+		echo "$(YELLOW)ℹ$(NC) Check kosmickrisp-install.log for installation errors"; \
+		exit 1; \
+	fi; \
+	if [ "$$EGL_OK" = false ]; then \
+		echo "$(RED)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"; \
+		echo "$(RED)✗$(NC) VERIFICATION FAILED: EGL library not found"; \
+		echo "$(YELLOW)ℹ$(NC) EGL may not have been built - check kosmickrisp-build.log"; \
+		echo "$(YELLOW)ℹ$(NC) Ensure -Degl=enabled and -Dgallium-drivers=zink are set"; \
+		exit 1; \
+	fi; \
+	if [ "$$GLES_OK" = false ]; then \
+		echo "$(YELLOW)⚠$(NC) WARNING: OpenGL ES libraries not found (may be optional)"; \
+	fi; \
+	echo ""; \
+	echo "$(YELLOW)ℹ$(NC) Step 6: Testing EGL functionality..."; \
+	HAS_COMPREHENSIVE=false; \
+	if [ -f "test-egl-comprehensive.c" ]; then \
+		echo "$(YELLOW)ℹ$(NC) Building comprehensive EGL test tool..."; \
+		PKG_CONFIG_PATH=$(KOSMICKRISP_PKGCONFIG):$$PKG_CONFIG_PATH \
+		clang -o test-egl-comprehensive test-egl-comprehensive.c \
+			-I$(KOSMICKRISP_INCLUDE) \
+			-L$(KOSMICKRISP_LIB) \
+			-lEGL -lGLESv2 \
+			-framework Foundation -framework Metal -framework MetalKit \
+			-std=c11 -Wall -Wextra -Werror 2>&1 | grep -E "(error|warning|test-egl)" || true; \
+		if [ -f "test-egl-comprehensive" ]; then \
+			HAS_COMPREHENSIVE=true; \
+		fi; \
+	fi; \
+	if [ "$$HAS_COMPREHENSIVE" = true ]; then \
+		echo "$(GREEN)✓$(NC) Comprehensive EGL test tool ready"; \
+		echo "$(YELLOW)ℹ$(NC) Running comprehensive EGL test..."; \
+		echo "$(YELLOW)  $(NC) Using macOS platform backend (EGL_PLATFORM=macos) for standalone test"; \
+		DYLD_LIBRARY_PATH=$(KOSMICKRISP_LIB):/opt/homebrew/lib:$$DYLD_LIBRARY_PATH \
+		LIBGL_DRIVERS_PATH=$(KOSMICKRISP_DRI) \
+		MESA_LOADER_DRIVER_OVERRIDE=zink \
+		VK_ICD_FILENAMES=$(KOSMICKRISP_ICD) \
+		EGL_PLATFORM=macos \
+		./test-egl-comprehensive 2>&1 | tee /tmp/egl-test.log; \
+		EGL_TEST_EXIT=$${PIPESTATUS[0]}; \
+		if [ $$EGL_TEST_EXIT -eq 0 ]; then \
+			echo "$(GREEN)✓$(NC) Comprehensive EGL test passed!"; \
+		else \
+			echo "$(RED)✗$(NC) Comprehensive EGL test failed (exit code $$EGL_TEST_EXIT)"; \
+			echo "$(YELLOW)ℹ$(NC) Check /tmp/egl-test.log for details"; \
+			cat /tmp/egl-test.log | tail -30; \
+		fi; \
+		rm -f test-egl-comprehensive; \
+	elif [ -f "test-egl-simple.c" ]; then \
+		echo "$(YELLOW)ℹ$(NC) Building simple EGL test tool..."; \
+		PKG_CONFIG_PATH=$(KOSMICKRISP_PKGCONFIG):$$PKG_CONFIG_PATH \
+		gcc -o test-egl test-egl-simple.c \
+			-I$(KOSMICKRISP_INCLUDE) \
+			-L$(KOSMICKRISP_LIB) \
+			-lEGL -lGLESv2 \
+			2>&1 | grep -E "(error|warning|test-egl)" || true; \
+		if [ -f "test-egl" ]; then \
+			echo "$(GREEN)✓$(NC) EGL test tool ready"; \
+			echo "$(YELLOW)ℹ$(NC) Running EGL functional test..."; \
+			DYLD_LIBRARY_PATH=$(KOSMICKRISP_LIB):/opt/homebrew/lib:$$DYLD_LIBRARY_PATH \
+			LIBGL_DRIVERS_PATH=$(KOSMICKRISP_DRI) \
+			MESA_LOADER_DRIVER_OVERRIDE=zink \
+			VK_ICD_FILENAMES=$(KOSMICKRISP_ICD) \
+			EGL_PLATFORM=macos \
+			./test-egl 2>&1 | tee /tmp/egl-test.log; \
+			EGL_TEST_EXIT=$${PIPESTATUS[0]}; \
+			if [ $$EGL_TEST_EXIT -eq 0 ]; then \
+				echo "$(GREEN)✓$(NC) EGL functional test passed!"; \
+			else \
+				echo "$(RED)✗$(NC) EGL functional test failed (exit code $$EGL_TEST_EXIT)"; \
+				echo "$(YELLOW)ℹ$(NC) Check /tmp/egl-test.log for details"; \
+				echo "$(YELLOW)ℹ$(NC) Note: Driver loading may require additional configuration"; \
+			fi; \
+			rm -f test-egl; \
+		fi; \
+	else \
+		echo "$(YELLOW)⚠$(NC) No EGL test files found (test-egl-comprehensive.c or test-egl-simple.c)"; \
+	fi; \
+	echo ""; \
+	echo "$(GREEN)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"; \
+	echo "$(GREEN)✓$(NC) KosmicKrisp installation verified successfully!"; \
+	echo "$(GREEN)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"; \
+	echo "$(YELLOW)ℹ$(NC) Installed components:"; \
+	echo "   • Vulkan driver (KosmicKrisp)"; \
+	echo "   • EGL library (with Zink - OpenGL ES → Vulkan)"; \
+	echo "   • OpenGL ES libraries (GLESv1, GLESv2)"; \
+	echo ""; \
+	echo "$(YELLOW)ℹ$(NC) You can now use:"; \
+	echo "   • Vulkan with waypipe dmabuf and video features"; \
+	echo "   • EGL/OpenGL ES clients (weston-simple-egl, etc.)"
 
+# Clean KosmicKrisp build (separate target for manual cleaning)
 clean-kosmickrisp:
 	@echo "$(YELLOW)ℹ$(NC) Cleaning KosmicKrisp build..."
 	@if [ -d "kosmickrisp/build" ]; then \
@@ -1141,12 +1680,84 @@ logs:
 		fi; \
 	done
 
-# Test clients
+# Test clients (clean, build, and run)
 test-clients: build-compositor
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
-	@echo "$(BLUE)🧪 Testing Wayland Clients$(NC)"
+	@echo "$(BLUE)🧹 Cleaning Test Clients${NC}"
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
-	@bash scripts/test-clients.sh
+	@if [ -d "test-clients" ]; then \
+		rm -rf test-clients; \
+		echo "$(GREEN)✓$(NC) Removed test-clients directory"; \
+	fi
+	@if [ -d "weston/build" ]; then \
+		rm -rf weston/build; \
+		echo "$(GREEN)✓$(NC) Removed weston build directory"; \
+	fi
+	@echo ""
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)🔨 Building All Wayland Test Clients${NC}"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@bash scripts/test-clients/build-all.sh
+	@echo ""
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)🧪 Running Wayland Test Clients${NC}"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@bash scripts/test-clients/run-tests.sh
+	@echo "$(GREEN)✓$(NC) Test clients completed"
+
+# Individual test client targets (run interactively until SIGTERM)
+# Usage: make test-weston-simple-egl (then press Ctrl+C to exit)
+
+test-wayland-info: build-compositor
+	@bash scripts/test-clients/run-single-test.sh wayland-info
+
+test-wayland-debug: build-compositor
+	@bash scripts/test-clients/run-single-test.sh wayland-debug
+
+test-simple-shm: build-compositor
+	@bash scripts/test-clients/run-single-test.sh simple-shm
+
+test-simple-damage: build-compositor
+	@bash scripts/test-clients/run-single-test.sh simple-damage
+
+test-weston-simple-shm: build-compositor
+	@bash scripts/test-clients/run-single-test.sh weston-simple-shm
+
+test-weston-simple-egl: build-compositor
+	@bash scripts/test-clients/run-single-test.sh weston-simple-egl
+
+test-weston-transformed: build-compositor
+	@bash scripts/test-clients/run-single-test.sh weston-transformed
+
+test-weston-subsurfaces: build-compositor
+	@bash scripts/test-clients/run-single-test.sh weston-subsurfaces
+
+test-weston-simple-damage: build-compositor
+	@bash scripts/test-clients/run-single-test.sh weston-simple-damage
+
+test-weston-simple-touch: build-compositor
+	@bash scripts/test-clients/run-single-test.sh weston-simple-touch
+
+test-weston-eventdemo: build-compositor
+	@bash scripts/test-clients/run-single-test.sh weston-eventdemo
+
+test-weston-keyboard: build-compositor
+	@bash scripts/test-clients/run-single-test.sh weston-keyboard
+
+test-weston-dnd: build-compositor
+	@bash scripts/test-clients/run-single-test.sh weston-dnd
+
+test-weston-cliptest: build-compositor
+	@bash scripts/test-clients/run-single-test.sh weston-cliptest
+
+test-weston-image: build-compositor
+	@bash scripts/test-clients/run-single-test.sh weston-image
+
+test-weston-editor: build-compositor
+	@bash scripts/test-clients/run-single-test.sh weston-editor
+
+# Debug targets (include from Makefile.debug)
+include Makefile.debug
 
 # Test compositors
 test-compositors: build-compositor
@@ -1155,3 +1766,277 @@ test-compositors: build-compositor
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
 	@bash scripts/test-compositors.sh
 	@echo "$(GREEN)✓$(NC) Logs opened"
+
+# iOS Compositor Build Targets
+
+# Clean iOS compositor build
+clean-ios-compositor:
+	@echo "$(YELLOW)ℹ$(NC) Cleaning iOS compositor build..."
+	@if [ -d "$(IOS_BUILD_DIR)" ]; then \
+		rm -rf $(IOS_BUILD_DIR); \
+		echo "$(GREEN)✓$(NC) iOS compositor cleaned"; \
+	fi
+
+# Build iOS dependencies: Wayland
+ios-wayland:
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶$(NC) Building Wayland for iOS"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@./install-epoll-shim-ios.sh
+	@./install-libffi-ios.sh
+	@./install-pixman-ios.sh
+	@./install-wayland-ios.sh
+
+# Build iOS dependencies: Waypipe
+ios-waypipe: ios-wayland ios-kosmickrisp
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶$(NC) Building Waypipe for iOS"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@./install-lz4-ios.sh
+	@./install-zstd-ios.sh
+	@./install-waypipe-ios.sh
+
+# Build iOS dependencies: KosmicKrisp
+ios-kosmickrisp: ios-wayland
+	@if [ -f "$(IOS_INSTALL_DIR)/lib/libvulkan_kosmickrisp.dylib" ]; then \
+		echo "$(GREEN)✓$(NC) KosmicKrisp already built for iOS"; \
+	else \
+		echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"; \
+		echo "$(BLUE)▶$(NC) Building KosmicKrisp for iOS"; \
+		echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"; \
+		./install-kosmickrisp-ios.sh; \
+	fi
+
+# Alias for backward compatibility - kosmickrisp now builds for both platforms
+kosmickrisp-ios: ios-kosmickrisp
+
+# Build iOS compositor
+ios-build-compositor: ios-wayland ios-waypipe ios-kosmickrisp
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶$(NC) Building Wawona for iOS Simulator"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@if [ -z "$(IOS_SDK)" ] || [ ! -d "$(IOS_SDK)" ]; then \
+		echo "$(RED)✗$(NC) iOS Simulator SDK not found"; \
+		echo "   Install Xcode and command-line tools"; \
+		echo "   Run: xcode-select --install"; \
+		exit 1; \
+	fi; \
+	if ! command -v xcrun >/dev/null 2>&1; then \
+		echo "$(RED)✗$(NC) xcrun not found"; \
+		echo "   Install Xcode command-line tools"; \
+		echo "   Run: xcode-select --install"; \
+		exit 1; \
+	fi; \
+	if ! xcrun simctl list devices >/dev/null 2>&1; then \
+		echo "$(RED)✗$(NC) simctl not available"; \
+		echo "   Install Xcode and command-line tools"; \
+		exit 1; \
+	fi
+	@echo "$(YELLOW)ℹ$(NC) Using iOS SDK: $(IOS_SDK)"
+	@echo "$(YELLOW)ℹ$(NC) Checking dependencies..."
+	@MISSING_DEPS=0; \
+	if ! command -v cmake >/dev/null 2>&1; then \
+		echo "$(RED)✗$(NC) cmake not found"; \
+		MISSING_DEPS=1; \
+	else \
+		echo "$(GREEN)✓$(NC) cmake: $$(cmake --version | head -n1)"; \
+	fi; \
+	if ! command -v pkg-config >/dev/null 2>&1; then \
+		echo "$(RED)✗$(NC) pkg-config not found"; \
+		MISSING_DEPS=1; \
+	else \
+		echo "$(GREEN)✓$(NC) pkg-config: $$(pkg-config --version)"; \
+	fi; \
+	if [ ! -d "$(IOS_INSTALL_DIR)" ] || [ ! -f "$(IOS_INSTALL_DIR)/lib/libwayland-server.dylib" ]; then \
+		echo "$(RED)✗$(NC) Wayland not built for iOS"; \
+		echo "   Run: $(YELLOW)make ios-wayland$(NC)"; \
+		MISSING_DEPS=1; \
+	else \
+		echo "$(GREEN)✓$(NC) Wayland for iOS found"; \
+	fi; \
+	if [ ! -f "$(IOS_INSTALL_DIR)/lib/libpixman-1.a" ] && [ ! -f "$(IOS_INSTALL_DIR)/lib/libpixman-1.dylib" ]; then \
+		echo "$(RED)✗$(NC) pixman not built for iOS"; \
+		echo "   Run: $(YELLOW)make ios-wayland$(NC)"; \
+		MISSING_DEPS=1; \
+	else \
+		echo "$(GREEN)✓$(NC) pixman for iOS found"; \
+	fi; \
+	if [ $$MISSING_DEPS -eq 1 ]; then \
+		echo "$(RED)✗$(NC) Missing required dependencies"; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶$(NC) Configuring CMake for iOS"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@mkdir -p $(IOS_BUILD_DIR)
+	@cd $(IOS_BUILD_DIR) && \
+		CMAKE_OSX_SYSROOT=$(IOS_SDK) \
+		CMAKE_OSX_ARCHITECTURES=arm64 \
+		CMAKE_SYSTEM_NAME=iOS \
+		CMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+		cmake -DCMAKE_TOOLCHAIN_FILE="" \
+			-DCMAKE_SYSTEM_NAME=iOS \
+			-DCMAKE_OSX_SYSROOT=$(IOS_SDK) \
+			-DCMAKE_OSX_ARCHITECTURES=arm64 \
+			-DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+			.. || (echo "$(RED)✗$(NC) CMake configuration failed"; exit 1)
+	@echo "$(GREEN)✓$(NC) CMake configuration complete"
+	@echo ""
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶$(NC) Building Wawona for iOS"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@cd $(IOS_BUILD_DIR) && \
+		if [ -f "build.ninja" ]; then \
+			if command -v ninja >/dev/null 2>&1; then \
+				echo "$(YELLOW)ℹ$(NC) Using Ninja build system"; \
+				ninja || (echo "$(RED)✗$(NC) Build failed" && exit 1); \
+			else \
+				echo "$(RED)✗$(NC) Ninja build files found but ninja command not available"; \
+				exit 1; \
+			fi; \
+		elif [ -f "Makefile" ]; then \
+			echo "$(YELLOW)ℹ$(NC) Using Make build system"; \
+			make || (echo "$(RED)✗$(NC) Build failed" && exit 1); \
+		else \
+			echo "$(RED)✗$(NC) No build files found"; \
+			exit 1; \
+		fi
+	@if [ ! -f "$(IOS_COMPOSITOR_BIN)" ]; then \
+		echo "$(RED)✗$(NC) Binary not found: $(IOS_COMPOSITOR_BIN)"; \
+		exit 1; \
+	fi
+	@BINARY_SIZE=$$(du -h $(IOS_COMPOSITOR_BIN) | cut -f1); \
+	echo "$(GREEN)✓$(NC) Build complete"; \
+	echo "$(GREEN)✓$(NC) Binary created: $(IOS_COMPOSITOR_BIN) ($$BINARY_SIZE)"
+
+# Create iOS app bundle
+ios-install-compositor: ios-build-compositor
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶$(NC) Creating iOS App Bundle"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@APP_BUNDLE="$(IOS_BUILD_DIR)/Wawona.app"; \
+	mkdir -p "$$APP_BUNDLE"; \
+	cp "$(IOS_COMPOSITOR_BIN)" "$$APP_BUNDLE/Wawona"; \
+	if [ -f "$(IOS_BUILD_DIR)/Info.plist" ]; then \
+		cp "$(IOS_BUILD_DIR)/Info.plist" "$$APP_BUNDLE/Info.plist"; \
+	else \
+		echo "$(YELLOW)⚠$(NC) Info.plist not found, creating minimal one"; \
+		echo "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>Wawona</string><key>CFBundleIdentifier</key><string>$(IOS_BUNDLE_ID)</string><key>CFBundleName</key><string>Wawona</string><key>CFBundlePackageType</key><string>APPL</string><key>MinimumOSVersion</key><string>15.0</string></dict></plist>" > "$$APP_BUNDLE/Info.plist"; \
+	fi; \
+	echo "APPL????" > "$$APP_BUNDLE/PkgInfo"; \
+	if [ -d "Settings.bundle" ]; then \
+		echo "$(YELLOW)ℹ$(NC) Copying Settings.bundle to app..."; \
+		cp -R "Settings.bundle" "$$APP_BUNDLE/Settings.bundle"; \
+		echo "$(GREEN)✓$(NC) Settings.bundle installed"; \
+	fi; \
+	echo "$(GREEN)✓$(NC) App bundle created: $$APP_BUNDLE"; \
+	echo "$(YELLOW)ℹ$(NC) Signing app bundle for Simulator..."; \
+	codesign --force --deep --sign - "$$APP_BUNDLE" >/dev/null 2>&1 && \
+		echo "$(GREEN)✓$(NC) App bundle signed" || \
+		echo "$(YELLOW)⚠$(NC) Code signing failed (may need manual signing)"
+
+# Run iOS compositor in Simulator
+ios-run-compositor: ios-install-compositor
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶$(NC) Running Wawona in iOS Simulator with Debug Logging"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@APP_BUNDLE="$(IOS_BUILD_DIR)/Wawona.app"; \
+	if [ ! -d "$$APP_BUNDLE" ]; then \
+		echo "$(RED)✗$(NC) App bundle not found: $$APP_BUNDLE"; \
+		echo "$(YELLOW)ℹ$(NC) Run: make ios-build-compositor"; \
+		exit 1; \
+	fi; \
+	if ! command -v xcrun >/dev/null 2>&1; then \
+		echo "$(RED)✗$(NC) xcrun not found"; \
+		echo "   Install Xcode command-line tools"; \
+		echo "   Run: xcode-select --install"; \
+		exit 1; \
+	fi; \
+	if [ -z "$(IOS_SDK)" ] || [ ! -d "$(IOS_SDK)" ]; then \
+		echo "$(RED)✗$(NC) iOS Simulator SDK not found"; \
+		echo "   Install Xcode and command-line tools"; \
+		echo "   Run: xcode-select --install"; \
+		exit 1; \
+	fi; \
+	echo "$(GREEN)✓$(NC) iOS SDK found: $(IOS_SDK)"; \
+	if ! xcrun simctl list devices >/dev/null 2>&1; then \
+		echo "$(RED)✗$(NC) simctl not available"; \
+		echo "   Install Xcode and command-line tools"; \
+		echo "   Run: xcode-select --install"; \
+		exit 1; \
+	fi; \
+	echo "$(YELLOW)ℹ$(NC) Opening iOS Simulator..."; \
+	open -a Simulator; \
+	sleep 3; \
+	DEVICE_ID=""; \
+	if [ -n "$(IOS_DEVICE_ID)" ]; then \
+		DEVICE_ID="$(IOS_DEVICE_ID)"; \
+		echo "$(YELLOW)ℹ$(NC) Using device ID: $$DEVICE_ID"; \
+	else \
+		echo "$(YELLOW)ℹ$(NC) Finding 'DebugPhone' iOS Simulator device..."; \
+		DEVICE_ID=$$(xcrun simctl list devices available | grep "DebugPhone" | grep -oE '[0-9A-F-]{36}' || echo ""); \
+		if [ -z "$$DEVICE_ID" ]; then \
+			echo "$(RED)✗$(NC) 'DebugPhone' iOS Simulator device not found"; \
+			echo "   Create a device named 'DebugPhone' in Xcode: Window > Devices and Simulators"; \
+			exit 1; \
+		fi; \
+		echo "$(YELLOW)ℹ$(NC) Found device: $$DEVICE_ID"; \
+	fi; \
+	DEVICE_STATE=$$(xcrun simctl list devices | grep "$$DEVICE_ID" | grep -oE '\(Booted\)|\(Shutdown\)|\(Creating\)' | tr -d '()' || echo "Shutdown"); \
+	if [ "$$DEVICE_STATE" != "Booted" ]; then \
+		echo "$(YELLOW)ℹ$(NC) Device state: $$DEVICE_STATE"; \
+		echo "$(YELLOW)ℹ$(NC) Booting device $$DEVICE_ID..."; \
+		xcrun simctl boot $$DEVICE_ID 2>&1 || true; \
+		echo "$(YELLOW)ℹ$(NC) Waiting for device to boot (max 30s)..."; \
+		TIMEOUT=30; \
+		ELAPSED=0; \
+		while [ $$ELAPSED -lt $$TIMEOUT ]; do \
+			CURRENT_STATE=$$(xcrun simctl list devices | grep "$$DEVICE_ID" | grep -oE '\(Booted\)|\(Shutdown\)|\(Creating\)' | tr -d '()' || echo "Shutdown"); \
+			if [ "$$CURRENT_STATE" = "Booted" ]; then \
+				break; \
+			fi; \
+			sleep 1; \
+			ELAPSED=$$((ELAPSED + 1)); \
+		done; \
+		FINAL_STATE=$$(xcrun simctl list devices | grep "$$DEVICE_ID" | grep -oE '\(Booted\)|\(Shutdown\)|\(Creating\)' | tr -d '()' || echo "Shutdown"); \
+		if [ "$$FINAL_STATE" != "Booted" ]; then \
+			echo "$(RED)✗$(NC) Device failed to boot (state: $$FINAL_STATE)"; \
+			exit 1; \
+		fi; \
+		sleep 2; \
+		echo "$(GREEN)✓$(NC) Device booted"; \
+	else \
+		echo "$(GREEN)✓$(NC) Device already booted"; \
+	fi; \
+	echo "$(YELLOW)ℹ$(NC) Uninstalling previous version (if exists)..."; \
+	xcrun simctl uninstall $$DEVICE_ID $(IOS_BUNDLE_ID) 2>/dev/null || true; \
+	echo "$(YELLOW)ℹ$(NC) Installing app to Simulator..."; \
+	xcrun simctl install $$DEVICE_ID "$$APP_BUNDLE" || { \
+		echo "$(RED)✗$(NC) Installation failed"; \
+		echo "   Device state: $$(xcrun simctl list devices | grep "$$DEVICE_ID")"; \
+		exit 1; \
+	}; \
+	echo "$(GREEN)✓$(NC) App installed"; \
+	echo ""; \
+	echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"; \
+	echo "$(BLUE)▶$(NC) Launching app with iOS Simulator logging attached"; \
+	echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"; \
+	echo "$(YELLOW)ℹ$(NC) Logs will stream below. Press Ctrl+C to stop."; \
+	echo ""; \
+	xcrun simctl launch --console-pty $$DEVICE_ID $(IOS_BUNDLE_ID) 2>&1 | cat || { \
+		echo ""; \
+		echo "$(RED)✗$(NC) Launch failed"; \
+		echo "$(YELLOW)ℹ$(NC) Check device state: $$(xcrun simctl list devices | grep "$$DEVICE_ID")"; \
+		echo "$(YELLOW)ℹ$(NC) Check app logs: xcrun simctl spawn $$DEVICE_ID log stream --predicate 'processImagePath contains \"Wawona\"'"; \
+		exit 1; \
+	}; \
+	echo ""; \
+	echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"; \
+	echo "$(GREEN)✓$(NC) iOS Compositor running in Simulator with debug logging"; \
+	echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+
+# Full iOS compositor target: clean, build dependencies, build compositor, install, and run
+# Automatically builds, installs, opens Simulator, and runs with debug logging
+# Note: ios-run-compositor will block and stream logs until the app exits or Ctrl+C is pressed
+ios-compositor: ios-run-compositor

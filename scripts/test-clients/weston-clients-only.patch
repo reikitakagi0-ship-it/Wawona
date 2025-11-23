@@ -1,0 +1,56 @@
+--- a/meson.build
++++ b/meson.build
+@@ -157,9 +157,15 @@ endif
+ dep_wayland_server = dependency('wayland-server', version: '>= 1.22.0')
+ dep_wayland_client = dependency('wayland-client', version: '>= 1.22.0')
+ dep_pixman = dependency('pixman-1', version: '>= 0.25.2')
+ dep_xkbcommon = dependency('xkbcommon', version: '>= 0.5.0')
+-dep_libinput = dependency('libinput', version: '>= 1.2.0')
++
++# Make libinput optional for clients-only builds
++has_any_backend = get_option('backend-drm') or get_option('backend-headless') or get_option('backend-wayland') or get_option('backend-x11')
++dep_libinput = dependency('libinput', version: '>= 1.2.0', required: has_any_backend)
++
+ if dep_xkbcommon.version().version_compare('>= 1.8.0')
+-	if dep_libinput.version().version_compare('>= 1.26.0')
++	if dep_libinput.found() and dep_libinput.version().version_compare('>= 1.26.0')
+ 		config_h.set('HAVE_COMPOSE_AND_KANA', '1')
+ 	endif
+ endif
+ 
+-dep_libevdev = dependency('libevdev')
++dep_libevdev = dependency('libevdev', required: has_any_backend)
+ dep_libm = cc.find_library('m')
+ dep_libdl = cc.find_library('dl')
+ dep_libdrm = dependency('libdrm', version: '>= 2.4.108')
+@@ -150,7 +156,10 @@ endif
+ config_h.set_quoted('WESTON_NATIVE_BACKEND', backend_default)
+ message('The default backend is ' + backend_default)
+-if not get_option('backend-' + backend_default)
+-	error('Backend @0@ was chosen as native but is not being built.'.format(backend_default))
++if not get_option('backend-' + backend_default)
++	if has_any_backend
++		error('Backend @0@ was chosen as native but is not being built.'.format(backend_default))
++	endif
+ endif
+ 
+--- a/libweston/meson.build
++++ b/libweston/meson.build
+@@ -200,6 +200,8 @@ if get_option('backend-drm')
+ 	dep_session_helper = declare_dependency(link_with: lib_session_helper)
+ endif
+ 
++has_any_backend = get_option('backend-drm') or get_option('backend-headless') or get_option('backend-wayland') or get_option('backend-x11')
++if has_any_backend and dep_libinput.found()
+ lib_libinput_backend = static_library(
+ 	'libinput-backend',
+ 	[
+@@ -214,6 +216,7 @@ lib_libinput_backend = static_library(
+ 	install: false
+ )
+ dep_libinput_backend = declare_dependency(
+ 	link_with: lib_libinput_backend,
+ 	include_directories: include_directories('.')
+ )
++endif
+

@@ -1,6 +1,8 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 #import "macos_backend.h"
+#import "WawonaPreferences.h"
+#import "WawonaAboutPanel.h"
 #include <wayland-server-core.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -35,6 +37,41 @@ int main(int argc, char *argv[]) {
         // Set up NSApplication
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+        
+        // Set up menu bar
+        NSMenu *menubar = [[NSMenu alloc] init];
+        NSMenuItem *appMenuItem = [[NSMenuItem alloc] init];
+        [menubar addItem:appMenuItem];
+        [NSApp setMainMenu:menubar];
+        
+        NSMenu *appMenu = [[NSMenu alloc] init];
+        NSString *appName = [[NSProcessInfo processInfo] processName];
+        
+        // About - use custom About panel
+        NSMenuItem *aboutItem = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"About %@", appName]
+                                                            action:@selector(showAboutPanel:)
+                                                     keyEquivalent:@""];
+        [aboutItem setTarget:[WawonaAboutPanel sharedAboutPanel]];
+        [appMenu addItem:aboutItem];
+        
+        [appMenu addItem:[NSMenuItem separatorItem]];
+        
+        // Preferences
+        NSMenuItem *prefsItem = [[NSMenuItem alloc] initWithTitle:@"Preferences..."
+                                                            action:@selector(showPreferences:)
+                                                     keyEquivalent:@","];
+        [prefsItem setTarget:[WawonaPreferences sharedPreferences]];
+        [appMenu addItem:prefsItem];
+        
+        [appMenu addItem:[NSMenuItem separatorItem]];
+        
+        // Quit
+        NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"Quit %@", appName]
+                                                           action:@selector(terminate:)
+                                                    keyEquivalent:@"q"];
+        [appMenu addItem:quitItem];
+        
+        [appMenuItem setSubmenu:appMenu];
 
         // Create compositor window
         NSRect frame = NSMakeRect(100, 100, 1024, 768);
@@ -61,7 +98,7 @@ int main(int argc, char *argv[]) {
                 runtimePath = [tmpDir stringByAppendingPathComponent:@"wayland-runtime"];
                 [[NSFileManager defaultManager] createDirectoryAtPath:runtimePath
                                            withIntermediateDirectories:YES
-                                                            attributes:@{NSFilePosixPermissions: @0777}
+                                                            attributes:@{NSFilePosixPermissions: @0700}
                                                                  error:nil];
                 setenv("XDG_RUNTIME_DIR", [runtimePath UTF8String], 1);
                 runtime_dir = [runtimePath UTF8String];
@@ -72,8 +109,10 @@ int main(int argc, char *argv[]) {
             runtimePath = [NSString stringWithUTF8String:runtime_dir];
             NSFileManager *fm = [NSFileManager defaultManager];
             if ([fm fileExistsAtPath:runtimePath]) {
-                // Set permissive permissions for VM access
-                [fm setAttributes:@{NSFilePosixPermissions: @0777} ofItemAtPath:runtimePath error:nil];
+                // Set correct permissions (0700) for Wayland compatibility
+                // Note: For VM sharing, the directory should be created with correct permissions
+                // before being shared, or use a different approach like waypipe
+                [fm setAttributes:@{NSFilePosixPermissions: @0700} ofItemAtPath:runtimePath error:nil];
             }
         }
         

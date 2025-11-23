@@ -13,6 +13,10 @@ struct wl_output_impl {
     int32_t refresh_rate;
     const char *name;
     const char *description;
+    
+    // List of all wl_output resources bound to this output
+    // Used to send mode change events to all clients when output size changes
+    struct wl_list resource_list;
 };
 
 struct wl_output_impl *wl_output_create(struct wl_display *display, int32_t width, int32_t height, const char *name);

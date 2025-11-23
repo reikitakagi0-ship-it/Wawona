@@ -1,0 +1,10 @@
+prefix=/Users/alex/Wawona/weston-install
+includedir=${prefix}/include
+
+datarootdir=${prefix}/share
+pkgdatadir=${pc_sysrootdir}${datarootdir}/libweston-15/protocols
+
+Name: libWeston Protocols
+Description: libWeston protocol files
+Version: 14.0.90
+Cflags: -I${includedir}

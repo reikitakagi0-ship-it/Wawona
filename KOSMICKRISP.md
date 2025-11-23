@@ -52,7 +52,10 @@ meson setup build \
   -Dtools=[] \
   -Dosmesa=disabled \
   -Dglx=disabled \
-  -Degl=disabled \
+  -Degl=enabled \
+  -Dgles1=enabled \
+  -Dgles2=enabled \
+  -Dgallium-drivers=zink \
   -Dgbm=disabled
 
 # Build

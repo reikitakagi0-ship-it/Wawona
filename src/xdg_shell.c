@@ -366,25 +366,28 @@ static void xdg_surface_destroy_handler(struct wl_client *client, struct wl_reso
     free(xdg_surface);
 }
 
-// Helper function to check if a wl_surface is a toplevel
-bool xdg_surface_is_toplevel(struct wl_surface_impl *wl_surface) {
-    if (!wl_surface) return false;
+// Helper function to get xdg_toplevel from a wl_surface_impl
+struct xdg_toplevel_impl *xdg_surface_get_toplevel_from_wl_surface(struct wl_surface_impl *wl_surface) {
+    if (!wl_surface) return NULL;
     
     // Check if this surface has an associated xdg_surface with a toplevel role
     struct xdg_surface_impl *xdg_surface = xdg_surfaces;
     while (xdg_surface) {
         if (xdg_surface->wl_surface == wl_surface && xdg_surface->role) {
             // Check if role is a toplevel (not a popup)
-            // In xdg-shell, if role is set and it's not NULL, check if it's a toplevel
-            // We can check by seeing if the resource exists and has the toplevel interface
             struct xdg_toplevel_impl *toplevel = (struct xdg_toplevel_impl *)xdg_surface->role;
             if (toplevel && toplevel->resource) {
-                return true;
+                return toplevel;
             }
         }
         xdg_surface = xdg_surface->next;
     }
-    return false;
+    return NULL;
+}
+
+// Helper function to check if a wl_surface is a toplevel
+bool xdg_surface_is_toplevel(struct wl_surface_impl *wl_surface) {
+    return xdg_surface_get_toplevel_from_wl_surface(wl_surface) != NULL;
 }
 
 static void xdg_surface_get_toplevel(struct wl_client *client, struct wl_resource *resource, uint32_t id) {
@@ -601,6 +604,12 @@ static void xdg_toplevel_set_title(struct wl_client *client, struct wl_resource 
     struct xdg_toplevel_impl *toplevel = wl_resource_get_user_data(resource);
     if (toplevel->title) free(toplevel->title);
     toplevel->title = title ? strdup(title) : NULL;
+    
+    // Update macOS window title when client sets title
+    if (toplevel && toplevel->xdg_surface && toplevel->xdg_surface->wl_surface) {
+        extern void macos_compositor_update_title(struct wl_client *client);
+        macos_compositor_update_title(client);
+    }
 }
 
 static void xdg_toplevel_set_app_id(struct wl_client *client, struct wl_resource *resource, const char *app_id) {
@@ -608,6 +617,12 @@ static void xdg_toplevel_set_app_id(struct wl_client *client, struct wl_resource
     struct xdg_toplevel_impl *toplevel = wl_resource_get_user_data(resource);
     if (toplevel->app_id) free(toplevel->app_id);
     toplevel->app_id = app_id ? strdup(app_id) : NULL;
+    
+    // Update macOS window title when client sets app_id (if title not set)
+    if (toplevel && toplevel->xdg_surface && toplevel->xdg_surface->wl_surface) {
+        extern void macos_compositor_update_title(struct wl_client *client);
+        macos_compositor_update_title(client);
+    }
 }
 
 static void xdg_toplevel_show_window_menu(struct wl_client *client, struct wl_resource *resource, struct wl_resource *seat, uint32_t serial, int32_t x, int32_t y) {

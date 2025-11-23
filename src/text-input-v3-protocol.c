@@ -78,7 +78,7 @@ static const struct wl_message zwp_text_input_v3_events[] = {
 	{ "done", "u", text_input_unstable_v3_types + 0 },
 };
 
-WL_PRIVATE const struct wl_interface zwp_text_input_v3_interface = {
+const struct wl_interface zwp_text_input_v3_interface = {
 	"zwp_text_input_v3", 1,
 	8, zwp_text_input_v3_requests,
 	6, zwp_text_input_v3_events,
@@ -89,7 +89,7 @@ static const struct wl_message zwp_text_input_manager_v3_requests[] = {
 	{ "get_text_input", "no", text_input_unstable_v3_types + 6 },
 };
 
-WL_PRIVATE const struct wl_interface zwp_text_input_manager_v3_interface = {
+const struct wl_interface zwp_text_input_manager_v3_interface = {
 	"zwp_text_input_manager_v3", 1,
 	2, zwp_text_input_manager_v3_requests,
 	0, NULL,
