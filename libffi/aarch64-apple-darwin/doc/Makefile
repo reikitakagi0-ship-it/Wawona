@@ -217,9 +217,9 @@ AWK = gawk
 CC = xcrun -sdk iphonesimulator clang
 CCAS = xcrun -sdk iphonesimulator clang
 CCASDEPMODE = depmode=gcc3
-CCASFLAGS = -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator26.0.sdk -mios-simulator-version-min=15.0 -fno-asynchronous-unwind-tables
+CCASFLAGS = -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator26.0.sdk -mios-simulator-version-min=15.0 -fno-asynchronous-unwind-tables -Wno-deprecated-declarations
 CCDEPMODE = depmode=gcc3
-CFLAGS = -Wall -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator26.0.sdk -mios-simulator-version-min=15.0 -fno-asynchronous-unwind-tables -fexceptions
+CFLAGS = -Wall -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator26.0.sdk -mios-simulator-version-min=15.0 -fno-asynchronous-unwind-tables -Wno-deprecated-declarations -fexceptions
 CPPFLAGS = 
 CSCOPE = cscope
 CTAGS = ctags
@@ -251,7 +251,7 @@ INSTALL_PROGRAM = ${INSTALL}
 INSTALL_SCRIPT = ${INSTALL}
 INSTALL_STRIP_PROGRAM = $(install_sh) -c -s
 LD = /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
-LDFLAGS = -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator26.0.sdk -mios-simulator-version-min=15.0
+LDFLAGS = -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator26.0.sdk -mios-simulator-version-min=15.0 -Wl,-w
 LIBOBJS = 
 LIBS = 
 LIBTOOL = $(SHELL) $(top_builddir)/libtool

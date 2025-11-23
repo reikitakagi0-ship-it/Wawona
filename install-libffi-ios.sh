@@ -4,6 +4,7 @@
 # Cross-compiles libffi for iOS Simulator
 
 set -e
+set -o pipefail
 
 # Directories
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,8 +37,8 @@ echo "Configuring libffi for iOS Simulator..."
 
 # We need to set CFLAGS/LDFLAGS manually for autotools
 export CC="xcrun -sdk iphonesimulator clang"
-export CFLAGS="-arch arm64 -isysroot ${SDK_PATH} -mios-simulator-version-min=15.0 -fno-asynchronous-unwind-tables"
-export LDFLAGS="-arch arm64 -isysroot ${SDK_PATH} -mios-simulator-version-min=15.0"
+export CFLAGS="-arch arm64 -isysroot ${SDK_PATH} -mios-simulator-version-min=15.0 -fno-asynchronous-unwind-tables -Wno-deprecated-declarations"
+export LDFLAGS="-arch arm64 -isysroot ${SDK_PATH} -mios-simulator-version-min=15.0 -Wl,-w"
 
 
 ./configure \

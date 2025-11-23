@@ -4,6 +4,7 @@
 # Cross-compiles Wayland for iOS Simulator
 
 set -e
+set -o pipefail
 
 # Directories
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,7 +37,7 @@ objc = ['clang']
 objcpp = ['clang++']
 ar = ['ar']
 strip = ['strip']
-pkgconfig = ['pkg-config']
+pkg-config = ['pkg-config']
 
 [properties]
 # sys_root = '${SDK_PATH}'  <-- Removed to prevent pkg-config path mangling

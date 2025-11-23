@@ -4,6 +4,7 @@
 # Cross-compiles pixman for iOS Simulator using Meson
 
 set -e
+set -o pipefail
 
 # Directories
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,7 +49,8 @@ meson setup "${BUILD_DIR}" \
     -Dgtk=disabled \
     -Dlibpng=disabled \
     -Dtests=disabled \
-    -Dopenmp=disabled
+    -Dopenmp=disabled \
+    -Dc_args="-Werror"
 
 # Build
 echo "Building pixman..."

@@ -3296,7 +3296,7 @@ sse2_composite_over_n_8_8888 (pixman_implementation_t *imp,
 
 }
 
-#if defined(__GNUC__) && !defined(__x86_64__) && !defined(__amd64__)
+#if defined(__GNUC__) && !defined(__clang__) && !defined(__x86_64__) && !defined(__amd64__)
 __attribute__((__force_align_arg_pointer__))
 #endif
 static pixman_bool_t
@@ -6448,7 +6448,7 @@ static const pixman_iter_info_t sse2_iters[] =
     { PIXMAN_null },
 };
 
-#if defined(__GNUC__) && !defined(__x86_64__) && !defined(__amd64__)
+#if defined(__GNUC__) && !defined(__clang__) && !defined(__x86_64__) && !defined(__amd64__)
 __attribute__((__force_align_arg_pointer__))
 #endif
 pixman_implementation_t *

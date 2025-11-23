@@ -571,7 +571,7 @@ analyze_extent (pixman_image_t       *image,
  *
  * See https://bugs.freedesktop.org/show_bug.cgi?id=15693
  */
-#if defined (USE_SSE2) && defined(__GNUC__) && !defined(__x86_64__) && !defined(__amd64__)
+#if defined (USE_SSE2) && defined(__GNUC__) && !defined(__clang__) && !defined(__x86_64__) && !defined(__amd64__)
 __attribute__((__force_align_arg_pointer__))
 #endif
 PIXMAN_EXPORT void

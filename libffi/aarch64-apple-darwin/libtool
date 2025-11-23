@@ -171,7 +171,7 @@ lock_old_archive_extraction=yes
 LTCC="xcrun -sdk iphonesimulator clang"
 
 # LTCC compiler flags.
-LTCFLAGS="-Wall -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator26.0.sdk -mios-simulator-version-min=15.0 -fno-asynchronous-unwind-tables -fexceptions"
+LTCFLAGS="-Wall -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator26.0.sdk -mios-simulator-version-min=15.0 -fno-asynchronous-unwind-tables -Wno-deprecated-declarations -fexceptions"
 
 # Take the output of nm and produce a listing of raw symbols and C names.
 global_symbol_pipe="/usr/bin/sed -n -e 's/^.*[	 ]\\([ABCDGIRSTW][ABCDGIRSTW]*\\)[	 ][	 ]*_\\([_A-Za-z][_A-Za-z0-9]*\\)\$/\\1 _\\2 \\2/p' | /usr/bin/sed '/ __gnu_lto/d'"
@@ -363,8 +363,8 @@ old_archive_from_new_cmds=""
 old_archive_from_expsyms_cmds=""
 
 # Commands used to build a shared archive.
-archive_cmds="\$CC -dynamiclib \$allow_undefined_flag -o \$lib \$libobjs \$deplibs \$compiler_flags -install_name \$rpath/\$soname \$verstring "
-archive_expsym_cmds="/usr/bin/sed 's|^|_|' < \$export_symbols > \$output_objdir/\$libname-symbols.expsym~\$CC -dynamiclib \$allow_undefined_flag -o \$lib \$libobjs \$deplibs \$compiler_flags -install_name \$rpath/\$soname \$verstring  \$wl-exported_symbols_list,\$output_objdir/\$libname-symbols.expsym"
+archive_cmds="\$CC -dynamiclib \$allow_undefined_flag -o \$lib \$libobjs \$deplibs \$compiler_flags -install_name \$rpath/\$soname \$verstring \$single_module"
+archive_expsym_cmds="/usr/bin/sed 's|^|_|' < \$export_symbols > \$output_objdir/\$libname-symbols.expsym~\$CC -dynamiclib \$allow_undefined_flag -o \$lib \$libobjs \$deplibs \$compiler_flags -install_name \$rpath/\$soname \$verstring \$single_module \$wl-exported_symbols_list,\$output_objdir/\$libname-symbols.expsym"
 
 # Commands used to build a loadable module if different from building
 # a shared archive.
@@ -11998,8 +11998,8 @@ old_archive_from_new_cmds=""
 old_archive_from_expsyms_cmds=""
 
 # Commands used to build a shared archive.
-archive_cmds="\$CC -r -keep_private_externs -nostdlib -o \$lib-master.o \$libobjs~\$CC -dynamiclib \$allow_undefined_flag -o \$lib \$lib-master.o \$deplibs \$compiler_flags -install_name \$rpath/\$soname \$verstring"
-archive_expsym_cmds="/usr/bin/sed 's|^|_|' < \$export_symbols > \$output_objdir/\$libname-symbols.expsym~\$CC -r -keep_private_externs -nostdlib -o \$lib-master.o \$libobjs~\$CC -dynamiclib \$allow_undefined_flag -o \$lib \$lib-master.o \$deplibs \$compiler_flags -install_name \$rpath/\$soname \$verstring \$wl-exported_symbols_list,\$output_objdir/\$libname-symbols.expsym"
+archive_cmds="\$CC -dynamiclib \$allow_undefined_flag -o \$lib \$libobjs \$deplibs \$compiler_flags -install_name \$rpath/\$soname \$verstring \$single_module"
+archive_expsym_cmds="/usr/bin/sed 's|^|_|' < \$export_symbols > \$output_objdir/\$libname-symbols.expsym~\$CC -dynamiclib \$allow_undefined_flag -o \$lib \$libobjs \$deplibs \$compiler_flags -install_name \$rpath/\$soname \$verstring \$single_module \$wl-exported_symbols_list,\$output_objdir/\$libname-symbols.expsym"
 
 # Commands used to build a loadable module if different from building
 # a shared archive.

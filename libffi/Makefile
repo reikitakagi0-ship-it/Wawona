@@ -3968,4 +3968,19 @@ dist-hook dist-hook-all:
 #### ...... aarch64-apple-darwin
 #### ...... aarch64-apple-darwin
 #### ...... aarch64-apple-darwin
+#### ...... aarch64-apple-darwin
+#### ...... aarch64-apple-darwin
+#### ...... aarch64-apple-darwin
+#### ...... aarch64-apple-darwin
+#### ...... aarch64-apple-darwin
+#### ...... aarch64-apple-darwin
+#### ...... aarch64-apple-darwin
+#### ...... aarch64-apple-darwin
+#### ...... aarch64-apple-darwin
+#### ...... aarch64-apple-darwin
+#### ...... aarch64-apple-darwin
+#### ...... aarch64-apple-darwin
+#### ...... aarch64-apple-darwin
+#### ...... aarch64-apple-darwin
+#### ...... aarch64-apple-darwin
 ####  |aarch64-apple-darwin
