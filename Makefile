@@ -1102,7 +1102,7 @@ clean-waypipe:
 	@rm -f waypipe-build.log waypipe-install.log
 
 # KosmicKrisp: clean, clone, build, and install Vulkan driver for macOS (with EGL support via Zink)
-kosmickrisp: kosmickrisp-macos kosmickrisp-ios
+kosmickrisp: clean-kosmickrisp kosmickrisp-macos kosmickrisp-ios
 	@echo "$(GREEN)✓$(NC) KosmicKrisp built for macOS and iOS"
 
 kosmickrisp-macos:
@@ -1548,7 +1548,19 @@ clean-kosmickrisp:
 	@echo "$(YELLOW)ℹ$(NC) Cleaning KosmicKrisp build..."
 	@if [ -d "kosmickrisp/build" ]; then \
 		cd kosmickrisp && rm -rf build 2>/dev/null || true; \
-		echo "$(GREEN)✓$(NC) Cleaned KosmicKrisp build directory"; \
+		echo "$(GREEN)✓$(NC) Cleaned KosmicKrisp macOS build directory"; \
+	fi
+	@if [ -d "kosmickrisp/build-ios" ]; then \
+		cd kosmickrisp && rm -rf build-ios 2>/dev/null || true; \
+		echo "$(GREEN)✓$(NC) Cleaned KosmicKrisp iOS build directory"; \
+	fi
+	@if [ -f "$(IOS_INSTALL_DIR)/lib/libvulkan_kosmickrisp.dylib" ]; then \
+		rm -f "$(IOS_INSTALL_DIR)/lib/libvulkan_kosmickrisp.dylib" 2>/dev/null || true; \
+		echo "$(GREEN)✓$(NC) Removed iOS KosmicKrisp installation"; \
+	fi
+	@if [ -d "$(IOS_INSTALL_DIR)/lib/vulkan" ]; then \
+		rm -rf "$(IOS_INSTALL_DIR)/lib/vulkan" 2>/dev/null || true; \
+		echo "$(GREEN)✓$(NC) Removed iOS Vulkan drivers"; \
 	fi
 	@rm -f kosmickrisp-build.log kosmickrisp-install.log kosmickrisp-clone.log
 
@@ -1798,14 +1810,24 @@ ios-waypipe: ios-wayland ios-kosmickrisp
 
 # Build iOS dependencies: KosmicKrisp
 ios-kosmickrisp: ios-wayland
-	@if [ -f "$(IOS_INSTALL_DIR)/lib/libvulkan_kosmickrisp.dylib" ]; then \
-		echo "$(GREEN)✓$(NC) KosmicKrisp already built for iOS"; \
-	else \
-		echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"; \
-		echo "$(BLUE)▶$(NC) Building KosmicKrisp for iOS"; \
-		echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"; \
-		./install-kosmickrisp-ios.sh; \
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)▶$(NC) Building KosmicKrisp for iOS"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(YELLOW)ℹ$(NC) Cleaning previous iOS KosmicKrisp build and installation..."
+	@if [ -d "kosmickrisp/build-ios" ]; then \
+		rm -rf kosmickrisp/build-ios 2>/dev/null || true; \
+		echo "$(GREEN)✓$(NC) Cleaned KosmicKrisp iOS build directory"; \
 	fi
+	@if [ -f "$(IOS_INSTALL_DIR)/lib/libvulkan_kosmickrisp.dylib" ]; then \
+		rm -f "$(IOS_INSTALL_DIR)/lib/libvulkan_kosmickrisp.dylib" 2>/dev/null || true; \
+		echo "$(GREEN)✓$(NC) Removed previous iOS KosmicKrisp installation"; \
+	fi
+	@if [ -d "$(IOS_INSTALL_DIR)/lib/vulkan" ]; then \
+		rm -rf "$(IOS_INSTALL_DIR)/lib/vulkan" 2>/dev/null || true; \
+		echo "$(GREEN)✓$(NC) Removed previous iOS Vulkan drivers"; \
+	fi
+	@echo ""
+	@./install-kosmickrisp-ios.sh
 
 # Alias for backward compatibility - kosmickrisp now builds for both platforms
 kosmickrisp-ios: ios-kosmickrisp

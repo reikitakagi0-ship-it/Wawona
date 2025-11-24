@@ -40,4 +40,10 @@ make -j$(sysctl -n hw.ncpu) lib
 # Install
 make install PREFIX="${INSTALL_DIR}"
 
+# Fix pkg-config file to use correct prefix
+if [ -f "${INSTALL_DIR}/lib/pkgconfig/libzstd.pc" ]; then
+    sed -i.bak "s|^prefix=.*|prefix=${INSTALL_DIR}|" "${INSTALL_DIR}/lib/pkgconfig/libzstd.pc"
+    rm -f "${INSTALL_DIR}/lib/pkgconfig/libzstd.pc.bak"
+fi
+
 echo "Success! zstd installed to ${INSTALL_DIR}"

@@ -20,17 +20,41 @@ mkdir -p "${INSTALL_DIR}"
 
 cd "${KOSMICKRISP_DIR}"
 
-# Set PKG_CONFIG_PATH - prioritize iOS-installed libraries
-# Only include iOS-install paths to avoid finding macOS libraries
-export PKG_CONFIG_PATH="${INSTALL_DIR}/lib/pkgconfig:${INSTALL_DIR}/libdata/pkgconfig"
-# Also set PKG_CONFIG_LIBDIR to prevent pkg-config from searching default paths
-export PKG_CONFIG_LIBDIR="${INSTALL_DIR}/lib/pkgconfig"
+# Remove any iOS-installed wayland-scanner files that might confuse Meson
+# These are build tools and should not be installed for iOS target
+rm -f "${INSTALL_DIR}/bin/wayland-scanner" 2>/dev/null || true
+rm -f "${INSTALL_DIR}/lib/pkgconfig/wayland-scanner.pc" 2>/dev/null || true
+
+# For native build tools (like wayland-scanner), Meson uses native: true dependencies
+# which look in standard pkg-config paths. We need to ensure native wayland-scanner
+# is available and can be found.
+# Check for native wayland-scanner
+if ! command -v wayland-scanner >/dev/null; then
+    echo "Error: wayland-scanner not found in PATH."
+    echo "Please install wayland-scanner:"
+    echo "  brew install wayland"
+    echo "Or run 'make wayland' first to build it from source."
+    exit 1
+fi
+
+# Verify native wayland-scanner.pc exists
+NATIVE_PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig"
+if ! PKG_CONFIG_PATH="${NATIVE_PKG_CONFIG_PATH}" pkg-config --exists wayland-scanner 2>/dev/null; then
+    echo "Warning: wayland-scanner.pc not found in standard pkg-config paths."
+    echo "This might cause issues. Ensure wayland is installed via Homebrew."
+fi
+
+# Set PKG_CONFIG_PATH for target (iOS) libraries
+# Prioritize iOS-install paths, but include Homebrew paths for native build tools
+# Meson uses native: true dependencies which need access to native pkg-config files
+export PKG_CONFIG_PATH="${INSTALL_DIR}/lib/pkgconfig:${INSTALL_DIR}/libdata/pkgconfig:${NATIVE_PKG_CONFIG_PATH}"
+# Don't set PKG_CONFIG_LIBDIR as it prevents native dependency lookups
+# Instead, rely on PKG_CONFIG_PATH ordering to prioritize iOS libraries
 
 # Ensure Homebrew bison is in PATH (needed for Mesa build)
 export PATH="/opt/homebrew/opt/bison/bin:$PATH"
-# Ensure native wayland-scanner is found before iOS-installed one (build tools must be native)
-# Remove iOS-install/bin from PATH temporarily to avoid finding iOS wayland-scanner
-# Save original PATH and remove ios-install/bin
+# Ensure native wayland-scanner is found (build tools must be native)
+# Remove iOS-install/bin from PATH to avoid finding iOS wayland-scanner if it exists
 ORIG_PATH="$PATH"
 export PATH="/opt/homebrew/bin:/opt/homebrew/opt/bison/bin:/usr/local/bin:/usr/bin:/bin"
 

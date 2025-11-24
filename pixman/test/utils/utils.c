@@ -26,6 +26,12 @@
 #include <fenv.h>
 #endif
 
+#ifdef HAVE_FEENABLEEXCEPT
+#ifdef __APPLE__
+#include "../../pixman/ios_compat.h"
+#endif
+#endif
+
 #ifdef HAVE_LIBPNG
 #include <png.h>
 #endif

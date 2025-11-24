@@ -494,6 +494,14 @@ if pthreads_found
   config.set('HAVE_PTHREADS', 1)
 endif
 
+# For iOS, add compatibility header for platform-specific functions
+_ios_compat_prefix = ''
+_ios_compat_inc = []
+if host_machine.system() == 'darwin' and meson.is_cross_build()
+  _ios_compat_prefix = '#include "pixman/ios_compat.h"'
+  _ios_compat_inc = [include_directories('.')]
+endif
+
 funcs = ['sigaction', 'alarm', 'mprotect', 'getpagesize', 'mmap', 'getisax', 'gettimeofday']
 # mingw claimes to have posix_memalign, but it doesn't
 if host_machine.system() != 'windows'
@@ -501,15 +509,26 @@ if host_machine.system() != 'windows'
 endif
 
 foreach f : funcs
-  if cc.has_function(f)
-    config.set('HAVE_@0@'.format(f.to_upper()), 1)
+  if _ios_compat_prefix != '' and f == 'getisax'
+    _has_func = cc.has_function(f, prefix: _ios_compat_prefix, include_directories: _ios_compat_inc)
+  else
+    _has_func = cc.has_function(f)
   endif
+  config.set('HAVE_@0@'.format(f.to_upper()), _has_func)
 endforeach
 
 # This is only used in one test, that defines _GNU_SOURCE
-if cc.has_function('feenableexcept',
-                   prefix : '#define _GNU_SOURCE\n#include <fenv.h>',
-                   dependencies : dep_m)
+if host_machine.system() == 'darwin' and meson.is_cross_build() and _ios_compat_prefix != ''
+  _has_feenableexcept = cc.has_function('feenableexcept',
+                                       prefix: _ios_compat_prefix,
+                                       dependencies : dep_m,
+                                       include_directories: _ios_compat_inc)
+else
+  _has_feenableexcept = cc.has_function('feenableexcept',
+                                       prefix : '#define _GNU_SOURCE\n#include <fenv.h>',
+                                       dependencies : dep_m)
+endif
+if _has_feenableexcept
   config.set('HAVE_FEENABLEEXCEPT', 1)
 endif
 

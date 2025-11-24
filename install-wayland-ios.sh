@@ -66,14 +66,15 @@ rm -rf "${BUILD_DIR}"
 
 # We need to disable documentation and tests
 # libraries=true is default
-# scanner=true is default, but we need a native scanner for the build machine (macOS)
-# Meson handles native scanner automatically if we are cross compiling?
-# Actually, for cross compilation, we usually need a native scanner installed.
-# Assuming 'wayland-scanner' is in PATH from the macOS install (make wayland).
+# scanner=false: Don't build scanner for iOS (it's a build tool, not a runtime library)
+# Meson will automatically find and use a native wayland-scanner when cross-compiling
+# We need a native scanner available (from Homebrew or macOS Wayland build)
 
 if ! command -v wayland-scanner >/dev/null; then
     echo "Error: wayland-scanner not found in PATH."
-    echo "Please run 'make wayland' first to install the host tools."
+    echo "Please install wayland-scanner:"
+    echo "  brew install wayland"
+    echo "Or run 'make wayland' first to build it from source."
     exit 1
 fi
 
@@ -87,7 +88,7 @@ meson setup "${BUILD_DIR}" \
     -Ddocumentation=false \
     -Dtests=false \
     -Dlibraries=true \
-    -Dscanner=true
+    -Dscanner=false
 
 # Build
 echo "Building Wayland for iOS..."
@@ -96,5 +97,10 @@ meson compile -C "${BUILD_DIR}"
 # Install
 echo "Installing Wayland to ${INSTALL_DIR}..."
 meson install -C "${BUILD_DIR}"
+
+# Remove any wayland-scanner files that might have been installed (we don't build scanner for iOS)
+# These are build tools, not runtime libraries
+rm -f "${INSTALL_DIR}/bin/wayland-scanner" 2>/dev/null || true
+rm -f "${INSTALL_DIR}/lib/pkgconfig/wayland-scanner.pc" 2>/dev/null || true
 
 echo "Success! Wayland installed to ${INSTALL_DIR}"
