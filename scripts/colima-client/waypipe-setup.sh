@@ -26,7 +26,7 @@ check_waypipe() {
         else
             echo -e "${RED}✗${NC} waypipe not found"
             echo -e "${YELLOW}ℹ${NC} Install waypipe: brew install waypipe"
-            echo -e "${YELLOW}ℹ${NC} Or build from source in waypipe/ directory"
+            echo -e "${YELLOW}ℹ${NC} Or build from source in dependencies/waypipe/ directory"
             exit 1
         fi
     fi
@@ -55,9 +55,27 @@ start_waypipe_client() {
     # Verify compositor socket exists before starting waypipe client
     COMPOSITOR_SOCKET="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
     if [ ! -S "$COMPOSITOR_SOCKET" ]; then
-        echo -e "${RED}✗${NC} Compositor socket not found: $COMPOSITOR_SOCKET"
-        echo -e "${YELLOW}ℹ${NC} Start the compositor first: make compositor"
-        exit 1
+        if [ "${WAYPIPE_ALLOW_WAIT:-0}" = "1" ]; then
+            echo -e "${YELLOW}ℹ${NC} Compositor socket not found yet: $COMPOSITOR_SOCKET"
+            echo -e "${YELLOW}ℹ${NC} Waiting up to 20s for socket to appear..."
+            SOCKET_READY=false
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+                if [ -S "$COMPOSITOR_SOCKET" ]; then
+                    SOCKET_READY=true
+                    break
+                fi
+                sleep 2
+            done
+            if [ "$SOCKET_READY" = false ]; then
+                echo -e "${RED}✗${NC} Compositor socket did not appear: $COMPOSITOR_SOCKET"
+                echo -e "${YELLOW}ℹ${NC} Start the compositor first: make ios-compositor-fast"
+                exit 1
+            fi
+        else
+            echo -e "${RED}✗${NC} Compositor socket not found: $COMPOSITOR_SOCKET"
+            echo -e "${YELLOW}ℹ${NC} Start the compositor first: make compositor"
+            exit 1
+        fi
     fi
     echo -e "${GREEN}✓${NC} Compositor socket found: $COMPOSITOR_SOCKET"
     
@@ -184,4 +202,3 @@ init_waypipe() {
     # Don't use EXIT trap - waypipe client needs to stay alive while container runs
     trap cleanup_waypipe INT TERM
 }
-

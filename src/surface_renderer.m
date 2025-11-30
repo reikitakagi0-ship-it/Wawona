@@ -1,7 +1,8 @@
 #import "surface_renderer.h"
 #import <CoreGraphics/CoreGraphics.h>
-#include "wayland_compositor.h"
+#include "WawonaCompositor.h"
 #include "macos_backend.h"
+#include "wayland_viewporter.h"
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 #include "egl_buffer_handler.h"
 #endif
@@ -306,7 +307,20 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
                             if (surfaceImage.image) {
                                 CGImageRelease(surfaceImage.image);
                             }
-                            surfaceImage.image = CGImageRetain(placeholder_image);
+                            // Apply viewporter source cropping if present
+                            CGImageRef finalImage = placeholder_image;
+                            struct wl_viewport_impl *vp_crop = wl_viewport_from_surface(surface);
+                            if (vp_crop && vp_crop->has_source) {
+                                CGRect srcRect = CGRectMake(vp_crop->src_x, vp_crop->src_y, vp_crop->src_width, vp_crop->src_height);
+                                CGImageRef cropped = CGImageCreateWithImageInRect(placeholder_image, srcRect);
+                                if (cropped) {
+                                    CGImageRelease(finalImage);
+                                    finalImage = cropped;
+                                    placeholder_width = (int32_t)vp_crop->src_width;
+                                    placeholder_height = (int32_t)vp_crop->src_height;
+                                }
+                            }
+                            surfaceImage.image = CGImageRetain(finalImage);
                             
                             // Update surface dimensions
                             surface->width = placeholder_width;
@@ -314,8 +328,16 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
                             surface->buffer_width = placeholder_width;
                             surface->buffer_height = placeholder_height;
                             
-                            CGFloat clampedWidth = (placeholder_width < maxWidth) ? placeholder_width : maxWidth;
-                            CGFloat clampedHeight = (placeholder_height < maxHeight) ? placeholder_height : maxHeight;
+                            // Apply viewporter destination sizing if present
+                            struct wl_viewport_impl *vp_dest = wl_viewport_from_surface(surface);
+                            CGFloat destW = placeholder_width;
+                            CGFloat destH = placeholder_height;
+                            if (vp_dest && vp_dest->has_destination) {
+                                destW = vp_dest->dst_width;
+                                destH = vp_dest->dst_height;
+                            }
+                            CGFloat clampedWidth = (destW < maxWidth) ? destW : maxWidth;
+                            CGFloat clampedHeight = (destH < maxHeight) ? destH : maxHeight;
                             surfaceImage.frame = CGRectMake(surface->x, surface->y, clampedWidth, clampedHeight);
                             
                             CGImageRelease(placeholder_image);
@@ -422,11 +444,23 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
             self.surfaceImages[key] = surfaceImage;
         }
         
-        // Update image and cache buffer info
+        // Update image (apply viewporter source crop if present) and cache buffer info
         if (surfaceImage.image) {
             CGImageRelease(surfaceImage.image);
         }
-        surfaceImage.image = image ? CGImageRetain(image) : NULL;
+        CGImageRef finalImage = image;
+        struct wl_viewport_impl *vp_crop = wl_viewport_from_surface(surface);
+        if (image && vp_crop && vp_crop->has_source) {
+            CGRect srcRect = CGRectMake(vp_crop->src_x, vp_crop->src_y, vp_crop->src_width, vp_crop->src_height);
+            CGImageRef cropped = CGImageCreateWithImageInRect(image, srcRect);
+            if (cropped) {
+                CGImageRelease(finalImage);
+                finalImage = cropped;
+                width = (int32_t)vp_crop->src_width;
+                height = (int32_t)vp_crop->src_height;
+            }
+        }
+        surfaceImage.image = finalImage ? CGImageRetain(finalImage) : NULL;
         surfaceImage.lastBufferData = data;
         surfaceImage.lastWidth = width;
         surfaceImage.lastHeight = height;
@@ -440,9 +474,16 @@ static CGImageRef createCGImageFromData(void *data, int32_t width, int32_t heigh
     
     if (surfaceImage && surfaceImage.image) {
         
-        // Clamp frame to compositor window bounds
-        CGFloat clampedWidth = (width < maxWidth) ? width : maxWidth;
-        CGFloat clampedHeight = (height < maxHeight) ? height : maxHeight;
+        // Apply viewporter destination sizing if present, then clamp to compositor window bounds
+        struct wl_viewport_impl *vp_dest = wl_viewport_from_surface(surface);
+        CGFloat destW = width;
+        CGFloat destH = height;
+        if (vp_dest && vp_dest->has_destination) {
+            destW = vp_dest->dst_width;
+            destH = vp_dest->dst_height;
+        }
+        CGFloat clampedWidth = (destW < maxWidth) ? destW : maxWidth;
+        CGFloat clampedHeight = (destH < maxHeight) ? destH : maxHeight;
         CGRect newFrame = CGRectMake(surface->x, surface->y, clampedWidth, clampedHeight);
         
         // Only update frame if it changed (optimization)

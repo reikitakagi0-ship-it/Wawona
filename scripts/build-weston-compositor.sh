@@ -6,7 +6,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-WESTON_DIR="$PROJECT_ROOT/weston"
+WESTON_DIR="$PROJECT_ROOT/dependencies/weston"
 WESTON_BUILD_DIR="$WESTON_DIR/build"
 INSTALL_PREFIX="$PROJECT_ROOT/weston-install"
 
@@ -57,16 +57,16 @@ export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig:$PK
 
 # Check for locally built libinput BEFORE checking pkg-config
 # This allows us to find libinput built via 'make libinput'
-LIBINPUT_BUILD_PC="$PROJECT_ROOT/libinput/build-macos/meson-private/libinput.pc"
+LIBINPUT_BUILD_PC="$PROJECT_ROOT/dependencies/libinput/build-macos/meson-private/libinput.pc"
 if [ -f "$LIBINPUT_BUILD_PC" ]; then
-    export PKG_CONFIG_PATH="$PROJECT_ROOT/libinput/build-macos/meson-private:$PKG_CONFIG_PATH"
+    export PKG_CONFIG_PATH="$PROJECT_ROOT/dependencies/libinput/build-macos/meson-private:$PKG_CONFIG_PATH"
     echo -e "${GREEN}✓${NC} Found locally built libinput (adding to PKG_CONFIG_PATH)"
 fi
 
 # Check for locally built xkbcommon
-XKBCOMMON_BUILD_PC="$PROJECT_ROOT/xkbcommon/build-macos/meson-private/xkbcommon.pc"
+XKBCOMMON_BUILD_PC="$PROJECT_ROOT/dependencies/xkbcommon/build-macos/meson-private/xkbcommon.pc"
 if [ -f "$XKBCOMMON_BUILD_PC" ]; then
-    export PKG_CONFIG_PATH="$PROJECT_ROOT/xkbcommon/build-macos/meson-private:$PKG_CONFIG_PATH"
+    export PKG_CONFIG_PATH="$PROJECT_ROOT/dependencies/xkbcommon/build-macos/meson-private:$PKG_CONFIG_PATH"
     echo -e "${GREEN}✓${NC} Found locally built xkbcommon (adding to PKG_CONFIG_PATH)"
 fi
 
@@ -121,9 +121,9 @@ if pkg-config --exists libinput 2>/dev/null; then
     if [ "$LIBINPUT_HEADER_FOUND" = false ]; then
         if [ -f "/opt/homebrew/include/libinput.h" ] || \
            [ -f "/usr/local/include/libinput.h" ] || \
-           [ -f "$PROJECT_ROOT/libinput/include/libinput.h" ] || \
-           [ -f "$PROJECT_ROOT/libinput/src/libinput.h" ] || \
-           [ -f "$PROJECT_ROOT/libinput/build-macos/include/libinput.h" ]; then
+           [ -f "$PROJECT_ROOT/dependencies/libinput/include/libinput.h" ] || \
+           [ -f "$PROJECT_ROOT/dependencies/libinput/src/libinput.h" ] || \
+           [ -f "$PROJECT_ROOT/dependencies/libinput/build-macos/include/libinput.h" ]; then
             LIBINPUT_HEADER_FOUND=true
         fi
     fi
@@ -138,9 +138,9 @@ if pkg-config --exists libinput 2>/dev/null; then
     fi
 else
     # Check if headers exist even if pkg-config doesn't find it
-    if [ -f "$PROJECT_ROOT/libinput/include/libinput.h" ] || \
-       [ -f "$PROJECT_ROOT/libinput/src/libinput.h" ] || \
-       [ -f "$PROJECT_ROOT/libinput/build-macos/include/libinput.h" ]; then
+    if [ -f "$PROJECT_ROOT/dependencies/libinput/include/libinput.h" ] || \
+       [ -f "$PROJECT_ROOT/dependencies/libinput/src/libinput.h" ] || \
+       [ -f "$PROJECT_ROOT/dependencies/libinput/build-macos/include/libinput.h" ]; then
         HAS_LIBINPUT=true
         echo -e "${GREEN}✓${NC} libinput found (headers exist, but pkg-config not found - may need rebuild)"
     else
@@ -152,7 +152,7 @@ fi
 # Add macOS stubs to PKG_CONFIG_PATH BEFORE dependency verification
 # This allows meson to find stubs for libevdev, libdrm, hwdata, libdisplay-info, etc.
 # We add stubs AFTER checking for real libraries, so real ones take precedence
-STUBS_DIR="$PROJECT_ROOT/libinput-macos-stubs"
+STUBS_DIR="$PROJECT_ROOT/dependencies/libinput-macos-stubs"
 if [ -d "$STUBS_DIR" ]; then
     # Ensure all stub .pc files exist (create from -stub.pc if needed)
     STUB_PC_FILES=(
@@ -592,14 +592,14 @@ fi
 
 # Link libdisplay-info headers from subproject to stubs directory for include path
 if [ -d "$WESTON_DIR/subprojects/display-info/include/libdisplay-info" ] && [ ! -e "$PROJECT_ROOT/libinput-macos-stubs/libdisplay-info" ]; then
-    ln -sf "$WESTON_DIR/subprojects/display-info/include/libdisplay-info" "$PROJECT_ROOT/libinput-macos-stubs/libdisplay-info"
+    ln -sf "$WESTON_DIR/subprojects/display-info/include/libdisplay-info" "$PROJECT_ROOT/dependencies/libinput-macos-stubs/libdisplay-info"
     echo -e "${GREEN}✓${NC} Linked libdisplay-info headers from subproject"
 fi
 
 # Add macOS stubs to PKG_CONFIG_PATH as fallback for missing dependencies
 # This allows meson to find stubs for libevdev, libdrm, hwdata, libdisplay-info, etc.
 # We add stubs AFTER checking for real libraries, so real ones take precedence
-STUBS_DIR="$PROJECT_ROOT/libinput-macos-stubs"
+STUBS_DIR="$PROJECT_ROOT/dependencies/libinput-macos-stubs"
 if [ -d "$STUBS_DIR" ]; then
     # Ensure all stub .pc files exist (create from -stub.pc if needed)
     STUB_PC_FILES=(
@@ -708,7 +708,7 @@ echo ""
 
 # Fix runtime library paths for libinput
 # libinput is built locally and needs to be accessible at runtime
-if [ -f "$PROJECT_ROOT/libinput/build-macos/liblibinput.dylib" ]; then
+if [ -f "$PROJECT_ROOT/dependencies/libinput/build-macos/liblibinput.dylib" ]; then
     echo -e "${YELLOW}ℹ${NC} Fixing libinput library paths..."
     
     # Copy libinput library to install directory if not already there
@@ -732,8 +732,8 @@ if [ -f "$PROJECT_ROOT/libinput/build-macos/liblibinput.dylib" ]; then
     find "$INSTALL_PREFIX/bin" "$INSTALL_PREFIX/lib" -type f \( -perm +111 -o -name "*.dylib" \) -exec sh -c '
         file "{}" 2>/dev/null | grep -q "Mach-O" || exit 0
         # Change absolute paths to @rpath for liblibinput
-        install_name_tool -change "$PROJECT_ROOT/libinput/build-macos/liblibinput.10.dylib" "@rpath/liblibinput.10.dylib" "{}" 2>/dev/null || true
-        install_name_tool -change "$PROJECT_ROOT/libinput/build-macos/liblibinput.dylib" "@rpath/liblibinput.dylib" "{}" 2>/dev/null || true
+        install_name_tool -change "$PROJECT_ROOT/dependencies/libinput/build-macos/liblibinput.10.dylib" "@rpath/liblibinput.10.dylib" "{}" 2>/dev/null || true
+        install_name_tool -change "$PROJECT_ROOT/dependencies/libinput/build-macos/liblibinput.dylib" "@rpath/liblibinput.dylib" "{}" 2>/dev/null || true
     ' \;
     
     # Update install names and rpaths in installed binaries and libraries
@@ -744,8 +744,8 @@ if [ -f "$PROJECT_ROOT/libinput/build-macos/liblibinput.dylib" ]; then
         install_name_tool -add_rpath "@loader_path/../lib" "{}" 2>/dev/null || true
         install_name_tool -add_rpath "@executable_path/../lib" "{}" 2>/dev/null || true
         # Change absolute paths to @rpath
-        install_name_tool -change "$PROJECT_ROOT/libinput/build-macos/liblibinput.10.dylib" "@rpath/liblibinput.10.dylib" "{}" 2>/dev/null || true
-        install_name_tool -change "$PROJECT_ROOT/libinput/build-macos/liblibinput.dylib" "@rpath/liblibinput.dylib" "{}" 2>/dev/null || true
+        install_name_tool -change "$PROJECT_ROOT/dependencies/libinput/build-macos/liblibinput.10.dylib" "@rpath/liblibinput.10.dylib" "{}" 2>/dev/null || true
+        install_name_tool -change "$PROJECT_ROOT/dependencies/libinput/build-macos/liblibinput.dylib" "@rpath/liblibinput.dylib" "{}" 2>/dev/null || true
     ' \;
     echo -e "${GREEN}✓${NC} Updated rpath and install names in installed binaries and libraries"
 fi

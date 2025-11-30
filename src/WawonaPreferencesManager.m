@@ -11,6 +11,8 @@ NSString * const kWawonaPrefsRenderMacOSPointer = @"RenderMacOSPointer";
 NSString * const kWawonaPrefsMultipleClients = @"MultipleClients";
 NSString * const kWawonaPrefsSwapCmdAsCtrl = @"SwapCmdAsCtrl";
 NSString * const kWawonaPrefsWaypipeRSSupport = @"WaypipeRSSupport";
+NSString * const kWawonaPrefsEnableTCPListener = @"EnableTCPListener";
+NSString * const kWawonaPrefsTCPListenerPort = @"TCPListenerPort";
 NSString * const kWawonaPrefsWaylandSocketDir = @"WaylandSocketDir";
 NSString * const kWawonaPrefsWaylandDisplayNumber = @"WaylandDisplayNumber";
 
@@ -60,13 +62,19 @@ NSString * const kWawonaPrefsWaylandDisplayNumber = @"WaylandDisplayNumber";
         [defaults setBool:YES forKey:kWawonaPrefsRenderMacOSPointer];
     }
     if (![defaults objectForKey:kWawonaPrefsMultipleClients]) {
-        [defaults setBool:YES forKey:kWawonaPrefsMultipleClients];
+        [defaults setBool:NO forKey:kWawonaPrefsMultipleClients];
     }
     if (![defaults objectForKey:kWawonaPrefsSwapCmdAsCtrl]) {
         [defaults setBool:NO forKey:kWawonaPrefsSwapCmdAsCtrl];
     }
     if (![defaults objectForKey:kWawonaPrefsWaypipeRSSupport]) {
         [defaults setBool:NO forKey:kWawonaPrefsWaypipeRSSupport];
+    }
+    if (![defaults objectForKey:kWawonaPrefsEnableTCPListener]) {
+        [defaults setBool:NO forKey:kWawonaPrefsEnableTCPListener];
+    }
+    if (![defaults objectForKey:kWawonaPrefsTCPListenerPort]) {
+        [defaults setInteger:0 forKey:kWawonaPrefsTCPListenerPort]; // 0 means dynamic
     }
     if (![defaults objectForKey:kWawonaPrefsWaylandSocketDir]) {
         NSString *tmpDir = NSTemporaryDirectory();
@@ -92,6 +100,8 @@ NSString * const kWawonaPrefsWaylandDisplayNumber = @"WaylandDisplayNumber";
     [defaults removeObjectForKey:kWawonaPrefsMultipleClients];
     [defaults removeObjectForKey:kWawonaPrefsSwapCmdAsCtrl];
     [defaults removeObjectForKey:kWawonaPrefsWaypipeRSSupport];
+    [defaults removeObjectForKey:kWawonaPrefsEnableTCPListener];
+    [defaults removeObjectForKey:kWawonaPrefsTCPListenerPort];
     [defaults removeObjectForKey:kWawonaPrefsWaylandSocketDir];
     [defaults removeObjectForKey:kWawonaPrefsWaylandDisplayNumber];
     [defaults synchronize];
@@ -196,6 +206,25 @@ NSString * const kWawonaPrefsWaylandDisplayNumber = @"WaylandDisplayNumber";
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
+// Network / Remote Access
+- (BOOL)enableTCPListener {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:kWawonaPrefsEnableTCPListener];
+}
+
+- (void)setEnableTCPListener:(BOOL)enabled {
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kWawonaPrefsEnableTCPListener];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (NSInteger)tcpListenerPort {
+    return [[NSUserDefaults standardUserDefaults] integerForKey:kWawonaPrefsTCPListenerPort];
+}
+
+- (void)setTCPListenerPort:(NSInteger)port {
+    [[NSUserDefaults standardUserDefaults] setInteger:port forKey:kWawonaPrefsTCPListenerPort];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
 // Wayland Configuration
 - (NSString *)waylandSocketDir {
     NSString *dir = [[NSUserDefaults standardUserDefaults] stringForKey:kWawonaPrefsWaylandSocketDir];
@@ -221,4 +250,3 @@ NSString * const kWawonaPrefsWaylandDisplayNumber = @"WaylandDisplayNumber";
 }
 
 @end
-

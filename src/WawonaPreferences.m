@@ -258,6 +258,10 @@
 // Client Management
 @property (nonatomic, strong) NSButton *multipleClientsCheckbox;
 
+// Network / Remote Access
+@property (nonatomic, strong) NSButton *enableTCPListenerCheckbox;
+@property (nonatomic, strong) NSTextField *tcpListenerPortField;
+
 // Waypipe
 @property (nonatomic, strong) NSButton *waypipeRSSupportCheckbox;
 
@@ -518,6 +522,40 @@
     
     [stack addArrangedSubview:[self createSeparator]];
     
+    NSTextField *networkTitle = [self createLabel:@"Network / Remote Access:"];
+    [stack addArrangedSubview:networkTitle];
+    
+    self.enableTCPListenerCheckbox = [self createCheckbox:@"Enable TCP Listener"
+                                                   action:@selector(enableTCPListenerChanged:)];
+    [stack addArrangedSubview:self.enableTCPListenerCheckbox];
+    
+    NSTextField *networkDesc = [self createDescription:@"Allow external Wayland clients (e.g., via Waypipe) to connect to this compositor over the network."];
+    [stack addArrangedSubview:networkDesc];
+    
+    NSStackView *portStack = [[NSStackView alloc] init];
+    portStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    portStack.spacing = 10;
+    
+    NSTextField *portLabel = [self createLabel:@"TCP Port:"];
+    [portStack addArrangedSubview:portLabel];
+    
+    self.tcpListenerPortField = [[NSTextField alloc] init];
+    self.tcpListenerPortField.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.tcpListenerPortField setTarget:self];
+    [self.tcpListenerPortField setAction:@selector(tcpListenerPortChanged:)];
+    [portStack addArrangedSubview:self.tcpListenerPortField];
+    
+    [NSLayoutConstraint activateConstraints:@[
+        [self.tcpListenerPortField.widthAnchor constraintEqualToConstant:100]
+    ]];
+    
+    [stack addArrangedSubview:portStack];
+    
+    NSTextField *portDesc = [self createDescription:@"Port for TCP listener (0 for dynamic)."];
+    [stack addArrangedSubview:portDesc];
+    
+    [stack addArrangedSubview:[self createSeparator]];
+    
     self.waypipeRSSupportCheckbox = [self createCheckbox:@"Waypipe-RS Support"
                                                     action:@selector(waypipeRSSupportChanged:)];
     [stack addArrangedSubview:self.waypipeRSSupportCheckbox];
@@ -671,6 +709,8 @@
     self.renderMacOSPointerCheckbox.state = prefs.renderMacOSPointer ? NSControlStateValueOn : NSControlStateValueOff;
     self.swapCmdAsCtrlCheckbox.state = prefs.swapCmdAsCtrl ? NSControlStateValueOn : NSControlStateValueOff;
     self.multipleClientsCheckbox.state = prefs.multipleClientsEnabled ? NSControlStateValueOn : NSControlStateValueOff;
+    self.enableTCPListenerCheckbox.state = prefs.enableTCPListener ? NSControlStateValueOn : NSControlStateValueOff;
+    self.tcpListenerPortField.stringValue = [NSString stringWithFormat:@"%ld", (long)prefs.tcpListenerPort];
     self.waypipeRSSupportCheckbox.state = prefs.waypipeRSSupportEnabled ? NSControlStateValueOn : NSControlStateValueOff;
     
     self.waylandSocketDirField.stringValue = prefs.waylandSocketDir;
@@ -712,6 +752,15 @@
 
 - (void)multipleClientsChanged:(NSButton *)sender {
     [[WawonaPreferencesManager sharedManager] setMultipleClientsEnabled:sender.state == NSControlStateValueOn];
+}
+
+- (void)enableTCPListenerChanged:(NSButton *)sender {
+    [[WawonaPreferencesManager sharedManager] setEnableTCPListener:sender.state == NSControlStateValueOn];
+}
+
+- (void)tcpListenerPortChanged:(NSTextField *)sender {
+    NSInteger port = [sender.stringValue integerValue];
+    [[WawonaPreferencesManager sharedManager] setTCPListenerPort:port];
 }
 
 - (void)waypipeRSSupportChanged:(NSButton *)sender {

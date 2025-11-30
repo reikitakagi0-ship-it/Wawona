@@ -6,5 +6,5 @@ includedir=${prefix}/include
 Name: libevdev
 Description: Linux input device library (macOS stub)
 Version: 1.13.0
-Libs: 
+Libs: -L${libdir} -levdev-stub
 Cflags: -I${includedir}

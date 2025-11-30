@@ -6,14 +6,14 @@
 #import <Cocoa/Cocoa.h>
 #endif
 #import <CoreGraphics/CoreGraphics.h>
-#include "wayland_compositor.h"
+#include "WawonaCompositor.h"
 
 // Forward declaration
 @class SurfaceImage;
 
 // Surface Renderer - Converts Wayland buffers to Cocoa/UIKit drawing
 // Uses NSView/UIView drawing (like OWL compositor) instead of CALayer
-@interface SurfaceRenderer : NSObject
+@interface SurfaceRenderer : NSObject <RenderingBackend>
 
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
 @property (nonatomic, assign) UIView *compositorView;  // The view we draw into (assign for MRC compatibility)

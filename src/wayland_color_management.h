@@ -2,8 +2,12 @@
 
 #include <wayland-server-core.h>
 #include <wayland-server.h>
+#include <TargetConditionals.h>
 #include <CoreGraphics/CoreGraphics.h>
+
+#if !TARGET_OS_IPHONE
 #include <ColorSync/ColorSync.h>
+#endif
 
 struct wl_output_impl;
 struct wl_surface_impl;

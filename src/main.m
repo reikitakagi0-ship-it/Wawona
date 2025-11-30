@@ -1,14 +1,30 @@
+#import <Foundation/Foundation.h>
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+#import <UIKit/UIKit.h>
+#else
 #import <Cocoa/Cocoa.h>
+#endif
 #import <QuartzCore/QuartzCore.h>
-#import "macos_backend.h"
+#import "WawonaCompositor.h"
 #import "WawonaPreferences.h"
+#import "WawonaPreferencesManager.h"
 #import "WawonaAboutPanel.h"
 #include <wayland-server-core.h>
 #include <signal.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <string.h>
+#include <pthread.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
 
+// Global references for signal handler
 static struct wl_display *g_display = NULL;
-static MacOSCompositor *g_compositor = NULL;
+static WawonaCompositor *g_compositor = NULL;
 
 // Signal handler for graceful shutdown
 static void signal_handler(int sig) {
@@ -22,17 +38,375 @@ static void signal_handler(int sig) {
         wl_display_destroy(g_display);
         g_display = NULL;
     }
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    exit(0);
+#else
     [NSApp terminate:nil];
+#endif
 }
+
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+
+//
+// iOS Implementation
+//
+
+#import "ios_launcher_client.h"
+
+@interface WawonaAppDelegate : NSObject <UIApplicationDelegate>
+@property (nonatomic, strong) UIWindow *window;
+@property (nonatomic, strong) WawonaCompositor *compositor;
+@property (nonatomic, assign) struct wl_display *display;
+@property (nonatomic, assign) pthread_t launcher_thread; // Thread for launcher client
+@end
+
+@implementation WawonaAppDelegate
+
+- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    (void)application;
+    (void)launchOptions;
+    
+    NSLog(@"🎯 Wawona - Wayland Compositor for iOS");
+    NSLog(@"   Using libwayland-server (no WLRoots)");
+    NSLog(@"   Rendering with Metal/Surface");
+    NSLog(@"");
+    
+    // Set up XDG_RUNTIME_DIR
+    const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+    NSString *runtimePath = nil;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    
+    if (!runtime_dir) {
+        // Use app's container directory (iOS sandbox-friendly)
+        // Use tmp directory directly (shortest path) to keep socket path under 108-byte limit
+        // iOS Simulator paths can be very long, so we minimize directory nesting
+        NSString *tmpDir = NSTemporaryDirectory();
+        if (tmpDir) {
+            // Use tmp directory directly - wayland will create socket here
+            runtimePath = tmpDir;
+        } else {
+            // Fallback - should not happen on iOS
+            NSLog(@"❌ NSTemporaryDirectory() returned nil");
+            return NO;
+        }
+        
+        NSError *error = nil;
+        BOOL created = [fm createDirectoryAtPath:runtimePath
+                     withIntermediateDirectories:YES
+                                      attributes:@{NSFilePosixPermissions: @0700}
+                                           error:&error];
+        if (!created && ![fm fileExistsAtPath:runtimePath]) {
+            NSLog(@"❌ Failed to create runtime directory at %@: %@", runtimePath, error.localizedDescription);
+            return NO;
+        }
+        
+        // Verify directory is writable
+        if (![fm isWritableFileAtPath:runtimePath]) {
+            NSLog(@"❌ Runtime directory is not writable: %@", runtimePath);
+            return NO;
+        }
+        
+        setenv("XDG_RUNTIME_DIR", [runtimePath UTF8String], 1);
+        runtime_dir = [runtimePath UTF8String];
+        NSLog(@"   Set XDG_RUNTIME_DIR to: %@", runtimePath);
+    } else {
+        runtimePath = [NSString stringWithUTF8String:runtime_dir];
+        // Verify the existing directory is writable
+        if (![fm isWritableFileAtPath:runtimePath]) {
+            NSLog(@"❌ XDG_RUNTIME_DIR is not writable: %@", runtimePath);
+            return NO;
+        }
+    }
+    
+    // Create Wayland display
+    struct wl_display *display = wl_display_create();
+    if (!display) {
+        NSLog(@"❌ Failed to create wl_display");
+        return NO;
+    }
+    
+    const char *socket_name = "w0";
+    BOOL enable_tcp_pref = [[WawonaPreferencesManager sharedManager] enableTCPListener];
+    NSInteger tcp_port_pref = [[WawonaPreferencesManager sharedManager] tcpListenerPort];
+    BOOL use_tcp = enable_tcp_pref;
+    int tcp_listen_fd = -1;
+    int wayland_port = 0;
+    
+    if (use_tcp) {
+        if (enable_tcp_pref) {
+            NSLog(@"ℹ️ TCP Listener enabled via preferences (allowing external connections)");
+        }
+        
+        // Create TCP socket
+        tcp_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (tcp_listen_fd < 0) {
+            NSLog(@"❌ Failed to create TCP socket: %s", strerror(errno));
+            wl_display_destroy(display);
+            return NO;
+        }
+        
+        // Set socket options
+        int reuse = 1;
+        if (setsockopt(tcp_listen_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+            NSLog(@"⚠️ Failed to set SO_REUSEADDR: %s", strerror(errno));
+        }
+        
+        // Bind to address
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        
+        // If enabled via pref, bind to all interfaces (0.0.0.0) to allow external connections
+        // Otherwise (fallback only), bind to localhost (127.0.0.1) for security
+        if (enable_tcp_pref) {
+            addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        } else {
+            addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+        }
+        
+        // Use preferred port if set and enabled, otherwise dynamic (0)
+        if (enable_tcp_pref && tcp_port_pref > 0 && tcp_port_pref < 65536) {
+            addr.sin_port = htons((uint16_t)tcp_port_pref);
+        } else {
+            addr.sin_port = 0; // Let OS choose port
+        }
+        
+        if (bind(tcp_listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+            NSLog(@"❌ Failed to bind TCP socket: %s", strerror(errno));
+            close(tcp_listen_fd);
+            wl_display_destroy(display);
+            return NO;
+        }
+        
+        // Set socket to non-blocking mode (required for event loop)
+        int flags = fcntl(tcp_listen_fd, F_GETFL, 0);
+        if (flags < 0 || fcntl(tcp_listen_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+            NSLog(@"❌ Failed to set TCP socket to non-blocking: %s", strerror(errno));
+            close(tcp_listen_fd);
+            wl_display_destroy(display);
+            return NO;
+        }
+        
+        // Listen on socket
+        if (listen(tcp_listen_fd, 128) < 0) {
+            NSLog(@"❌ Failed to listen on TCP socket: %s", strerror(errno));
+            close(tcp_listen_fd);
+            wl_display_destroy(display);
+            return NO;
+        }
+        
+        // Get the port number that was assigned
+        socklen_t addr_len = sizeof(addr);
+        if (getsockname(tcp_listen_fd, (struct sockaddr *)&addr, &addr_len) < 0) {
+            NSLog(@"❌ Failed to get TCP socket port: %s", strerror(errno));
+            close(tcp_listen_fd);
+            wl_display_destroy(display);
+            return NO;
+        }
+        wayland_port = ntohs(addr.sin_port);
+        
+        // Note: We'll handle TCP accept() manually in the event loop
+        // wl_display_add_socket_fd doesn't work with listening sockets
+        
+        // Set WAYLAND_DISPLAY to TCP address format: "wayland-0" (clients will use WAYLAND_DISPLAY env var)
+        // For TCP, we'll use a special format or clients can connect directly via the port
+        char tcp_display[64];
+        snprintf(tcp_display, sizeof(tcp_display), "wayland-0");
+        setenv("WAYLAND_DISPLAY", tcp_display, 1);
+        // Also set WAYLAND_SOCKET_FD for compatibility (though not standard)
+        char port_str[16];
+        snprintf(port_str, sizeof(port_str), "%d", wayland_port);
+        setenv("WAYLAND_TCP_PORT", port_str, 1);
+        
+        NSString *bindAddr = enable_tcp_pref ? @"0.0.0.0" : @"127.0.0.1";
+        NSLog(@"✅ Wayland TCP socket listening on port %d (%@:%d)", wayland_port, bindAddr, wayland_port);
+        NSLog(@"   Clients can connect via: WAYLAND_DISPLAY=wayland-0 WAYLAND_TCP_PORT=%d", wayland_port);
+        
+        {
+            int cwd_ret = chdir(runtime_dir);
+            if (cwd_ret == 0) {
+                int ufd = socket(AF_UNIX, SOCK_STREAM, 0);
+                if (ufd >= 0) {
+                    struct sockaddr_un uaddr;
+                    memset(&uaddr, 0, sizeof(uaddr));
+                    uaddr.sun_family = AF_UNIX;
+                    strncpy(uaddr.sun_path, socket_name, sizeof(uaddr.sun_path) - 1);
+                    unlink(socket_name);
+                    if (bind(ufd, (struct sockaddr *)&uaddr, sizeof(uaddr)) == 0) {
+                        if (listen(ufd, 128) == 0) {
+                            if (wl_display_add_socket_fd(display, ufd) == 0) {
+                                setenv("WAYLAND_DISPLAY", socket_name, 1);
+                                NSLog(@"✅ Wayland Unix socket ALSO created: %s (cwd: %s)", socket_name, runtime_dir);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        int cwd_ret = chdir(runtime_dir);
+        if (cwd_ret != 0) {
+            NSLog(@"❌ Failed to chdir to runtime dir: %s", runtime_dir);
+            wl_display_destroy(display);
+            return NO;
+        }
+        int ufd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (ufd < 0) {
+            NSLog(@"❌ Failed to create Unix socket: %s", strerror(errno));
+            wl_display_destroy(display);
+            return NO;
+        }
+        struct sockaddr_un uaddr;
+        memset(&uaddr, 0, sizeof(uaddr));
+        uaddr.sun_family = AF_UNIX;
+        strncpy(uaddr.sun_path, socket_name, sizeof(uaddr.sun_path) - 1);
+        unlink(socket_name);
+        if (bind(ufd, (struct sockaddr *)&uaddr, sizeof(uaddr)) < 0) {
+            NSLog(@"❌ Failed to bind Unix socket '%s': %s", socket_name, strerror(errno));
+            close(ufd);
+            wl_display_destroy(display);
+            return NO;
+        }
+        if (listen(ufd, 128) < 0) {
+            NSLog(@"❌ Failed to listen on Unix socket '%s': %s", socket_name, strerror(errno));
+            close(ufd);
+            wl_display_destroy(display);
+            return NO;
+        }
+        if (wl_display_add_socket_fd(display, ufd) < 0) {
+            NSLog(@"❌ Failed to add Unix socket FD to Wayland display");
+            close(ufd);
+            wl_display_destroy(display);
+            return NO;
+        }
+        setenv("WAYLAND_DISPLAY", socket_name, 1);
+        NSLog(@"✅ Wayland Unix socket created: %s (cwd: %s)", socket_name, runtime_dir);
+    }
+    
+    // Store globals
+    g_display = display;
+    self.display = display;
+    
+    // Create iOS window
+    CGRect screenBounds = [[UIScreen mainScreen] bounds];
+    self.window = [[UIWindow alloc] initWithFrame:screenBounds];
+    self.window.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.2 alpha:1.0];
+    
+    // Root view controller
+    UIViewController *rootViewController = [[UIViewController alloc] init];
+    rootViewController.view = [[UIView alloc] initWithFrame:screenBounds];
+    rootViewController.view.backgroundColor = [UIColor clearColor];
+    self.window.rootViewController = rootViewController;
+    
+    // Create compositor backend
+    WawonaCompositor *compositor = [[WawonaCompositor alloc] initWithDisplay:display window:self.window];
+    g_compositor = compositor;
+    self.compositor = compositor;
+    
+    // Store TCP listening socket in compositor for manual accept() handling
+    if (use_tcp && tcp_listen_fd >= 0) {
+        compositor.tcp_listen_fd = tcp_listen_fd;
+    }
+    
+    // Signal handlers
+    signal(SIGTERM, signal_handler);
+    signal(SIGINT, signal_handler);
+    
+    if (![compositor start]) {
+        NSLog(@"❌ Failed to start compositor backend");
+        wl_display_destroy(display);
+        return NO;
+    }
+    
+    NSLog(@"🚀 Compositor running!");
+    
+    // Launch launcher client app only if multiple clients are allowed
+    if ([[WawonaPreferencesManager sharedManager] multipleClientsEnabled]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            int sv[2];
+            if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
+                NSLog(@"❌ Failed to create socketpair: %s", strerror(errno));
+                return;
+            }
+            struct wl_client *client = wl_client_create(self.display, sv[0]);
+            if (!client) {
+                NSLog(@"❌ Failed to create Wayland client on server side");
+                close(sv[0]);
+                close(sv[1]);
+                return;
+            }
+            NSLog(@"✅ Created in-process Wayland client via socketpair");
+            self.launcher_thread = startLauncherClientThread(self, sv[1]);
+        });
+    } else {
+        NSLog(@"ℹ️ Single-client mode: in-process launcher client disabled");
+    }
+    
+    // Settings button
+    UIButton *settingsButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    settingsButton.translatesAutoresizingMaskIntoConstraints = NO;
+    UIImage *gearImage = [UIImage systemImageNamed:@"gearshape.fill"];
+    [settingsButton setImage:gearImage forState:UIControlStateNormal];
+    settingsButton.tintColor = [UIColor whiteColor];
+    settingsButton.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.7];
+    settingsButton.layer.cornerRadius = 25.0;
+    [settingsButton addTarget:self action:@selector(showSettings:) forControlEvents:UIControlEventTouchUpInside];
+    [rootViewController.view addSubview:settingsButton];
+    
+    [NSLayoutConstraint activateConstraints:@[
+        [settingsButton.topAnchor constraintEqualToAnchor:rootViewController.view.safeAreaLayoutGuide.topAnchor constant:20],
+        [settingsButton.trailingAnchor constraintEqualToAnchor:rootViewController.view.safeAreaLayoutGuide.trailingAnchor constant:-20],
+        [settingsButton.widthAnchor constraintEqualToConstant:50],
+        [settingsButton.heightAnchor constraintEqualToConstant:50],
+    ]];
+    
+    [self.window makeKeyAndVisible];
+    
+    return YES;
+}
+
+- (void)showSettings:(id)sender {
+    WawonaPreferences *prefs = [[WawonaPreferences alloc] init];
+    UIViewController *rootViewController = self.window.rootViewController;
+    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:prefs];
+    navController.modalPresentationStyle = UIModalPresentationPageSheet;
+    [rootViewController presentViewController:navController animated:YES completion:nil];
+}
+
+
+- (void)applicationWillTerminate:(UIApplication *)application {
+    // Disconnect launcher client if still connected
+    disconnectLauncherClient(self);
+    
+    if (self.compositor) {
+        [self.compositor stop];
+        self.compositor = nil;
+    }
+    if (self.display) {
+        wl_display_destroy(self.display);
+        self.display = NULL;
+    }
+}
+
+@end
+
+int main(int argc, char *argv[]) {
+    @autoreleasepool {
+        return UIApplicationMain(argc, argv, nil, NSStringFromClass([WawonaAppDelegate class]));
+    }
+}
+
+#else
+
+//
+// macOS Implementation
+//
 
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
     @autoreleasepool {
         NSLog(@"🎯 Wawona - Wayland Compositor for macOS");
-        NSLog(@"   Using libwayland-server (no WLRoots)");
-        NSLog(@"   Rendering with CALayer");
-        NSLog(@"");
         
         // Set up NSApplication
         [NSApplication sharedApplication];
@@ -47,7 +421,6 @@ int main(int argc, char *argv[]) {
         NSMenu *appMenu = [[NSMenu alloc] init];
         NSString *appName = [[NSProcessInfo processInfo] processName];
         
-        // About - use custom About panel
         NSMenuItem *aboutItem = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"About %@", appName]
                                                             action:@selector(showAboutPanel:)
                                                      keyEquivalent:@""];
@@ -56,7 +429,6 @@ int main(int argc, char *argv[]) {
         
         [appMenu addItem:[NSMenuItem separatorItem]];
         
-        // Preferences
         NSMenuItem *prefsItem = [[NSMenuItem alloc] initWithTitle:@"Preferences..."
                                                             action:@selector(showPreferences:)
                                                      keyEquivalent:@","];
@@ -65,12 +437,10 @@ int main(int argc, char *argv[]) {
         
         [appMenu addItem:[NSMenuItem separatorItem]];
         
-        // Quit
         NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"Quit %@", appName]
                                                            action:@selector(terminate:)
                                                     keyEquivalent:@"q"];
         [appMenu addItem:quitItem];
-        
         [appMenuItem setSubmenu:appMenu];
 
         // Create compositor window
@@ -84,12 +454,8 @@ int main(int argc, char *argv[]) {
             defer:NO];
 
         [window setTitle:@"Wawona"];
-        // Don't show window initially - wait for first client to connect
-        // Window will be shown and sized automatically when first client surface is committed
-        // [window makeKeyAndOrderFront:nil]; // DELAYED - shown when first client connects
-        // [NSApp activateIgnoringOtherApps:YES]; // DELAYED - done when window is shown
-
-        // Set up XDG_RUNTIME_DIR if not set (required for Wayland socket)
+        
+        // Set up XDG_RUNTIME_DIR
         const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
         NSString *runtimePath = nil;
         if (!runtime_dir) {
@@ -102,66 +468,30 @@ int main(int argc, char *argv[]) {
                                                                  error:nil];
                 setenv("XDG_RUNTIME_DIR", [runtimePath UTF8String], 1);
                 runtime_dir = [runtimePath UTF8String];
-                NSLog(@"   Set XDG_RUNTIME_DIR to: %@", runtimePath);
-            }
-        } else {
-            // If XDG_RUNTIME_DIR is set (e.g., for VM sharing), ensure it's accessible
-            runtimePath = [NSString stringWithUTF8String:runtime_dir];
-            NSFileManager *fm = [NSFileManager defaultManager];
-            if ([fm fileExistsAtPath:runtimePath]) {
-                // Set correct permissions (0700) for Wayland compatibility
-                // Note: For VM sharing, the directory should be created with correct permissions
-                // before being shared, or use a different approach like waypipe
-                [fm setAttributes:@{NSFilePosixPermissions: @0700} ofItemAtPath:runtimePath error:nil];
             }
         }
         
         // Create Wayland display
-        // This display is fully compatible with EGL_EXT_platform_base and EGL_EXT_platform_wayland
-        // Clients can use eglGetPlatformDisplayEXT(EGL_PLATFORM_WAYLAND_EXT, display, NULL)
-        // The warning about EGL_EXT_platform_base comes from the client's EGL library,
-        // not from Wawona's display implementation
         struct wl_display *display = wl_display_create();
         if (!display) {
             NSLog(@"❌ Failed to create wl_display");
             return -1;
         }
         
-        // Add Wayland socket (Unix domain socket)
-        // This socket is compatible with all standard Wayland clients including EGL-based ones
         const char *socket = wl_display_add_socket_auto(display);
         if (!socket) {
             NSLog(@"❌ Failed to create WAYLAND_DISPLAY socket");
-            NSLog(@"   Make sure XDG_RUNTIME_DIR is set and writable");
             wl_display_destroy(display);
             return -1;
         }
-
         NSLog(@"✅ Wayland socket created: %s", socket);
-        NSLog(@"   Display supports EGL_EXT_platform_base (clients can use eglGetPlatformDisplayEXT)");
-        
-        // Set permissive socket permissions for VM access (if XDG_RUNTIME_DIR is shared)
-        if (runtime_dir) {
-            NSString *socketPath = [NSString stringWithUTF8String:runtime_dir];
-            socketPath = [socketPath stringByAppendingPathComponent:[NSString stringWithUTF8String:socket]];
-            NSFileManager *fm = [NSFileManager defaultManager];
-            if ([fm fileExistsAtPath:socketPath]) {
-                [fm setAttributes:@{NSFilePosixPermissions: @0666} ofItemAtPath:socketPath error:nil];
-                NSLog(@"   Socket permissions set to 666 for VM access");
-            }
-        }
-        
-        NSLog(@"   Clients can connect with: export WAYLAND_DISPLAY=%s", socket);
-        NSLog(@"");
 
-        // Store globals for signal handler
         g_display = display;
         
         // Create compositor backend
-        MacOSCompositor *compositor = [[MacOSCompositor alloc] initWithDisplay:display window:window];
+        WawonaCompositor *compositor = [[WawonaCompositor alloc] initWithDisplay:display window:window];
         g_compositor = compositor;
         
-        // Set up signal handlers for graceful shutdown (after compositor is created)
         signal(SIGTERM, signal_handler);
         signal(SIGINT, signal_handler);
         
@@ -172,21 +502,15 @@ int main(int argc, char *argv[]) {
         }
 
         NSLog(@"🚀 Compositor running!");
-        NSLog(@"   Ready for Wayland clients to connect");
-        NSLog(@"");
-
-        // Run macOS event loop
-        // TODO: Integrate Wayland event loop with NSRunLoop
+        
         [NSApp run];
 
-        // Cleanup
         [compositor stop];
         g_compositor = nil;
         wl_display_destroy(display);
         g_display = NULL;
-        
-        NSLog(@"👋 Compositor shutdown complete");
     }
     return 0;
 }
 
+#endif

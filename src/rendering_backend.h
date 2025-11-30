@@ -5,41 +5,47 @@
 #else
 #import <Cocoa/Cocoa.h>
 #endif
-#import <Metal/Metal.h>
-#import <MetalKit/MetalKit.h>
-#include "wayland_compositor.h"
 
-// Rendering backend selection
-typedef enum {
-    RENDERING_BACKEND_COCOA,  // NSWindow + Cocoa drawing (single window)
-    RENDERING_BACKEND_METAL   // Metal rendering (full compositor)
-} RenderingBackend;
+// Forward declaration
+struct wl_surface_impl;
 
-// Forward declarations
-@class SurfaceRenderer;
-@class MetalRenderer;
+// Rendering Backend Interface
+// Abstract interface for different rendering backends (SurfaceRenderer, MetalRenderer, etc.)
 
-// Rendering backend interface
-@protocol RenderingBackendProtocol
+@protocol RenderingBackend <NSObject>
+
+@required
 - (void)renderSurface:(struct wl_surface_impl *)surface;
 - (void)removeSurface:(struct wl_surface_impl *)surface;
 - (void)setNeedsDisplay;
-@end
 
-// Cocoa/Cocoa rendering backend (for single Wayland windows)
-@interface CocoaRenderer : NSObject <RenderingBackendProtocol>
-@property (nonatomic, assign) NSView *compositorView;
-- (instancetype)initWithCompositorView:(NSView *)view;
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+- (void)drawSurfacesInRect:(CGRect)dirtyRect;
+#else
 - (void)drawSurfacesInRect:(NSRect)dirtyRect;
+#endif
+
+@optional
+- (void)initialize;
+- (void)cleanup;
+
 @end
 
-// Metal rendering backend (for full compositor like Weston)
-@interface MetalRenderer : NSObject <RenderingBackendProtocol>
-@property (nonatomic, strong) MTKView *metalView;
-@property (nonatomic, strong) id<MTLDevice> device;
-@property (nonatomic, strong) id<MTLCommandQueue> commandQueue;
-@property (nonatomic, strong) id<MTLRenderPipelineState> pipelineState;
-- (instancetype)initWithMetalView:(MTKView *)view;
-- (void)drawInMTKView:(MTKView *)view;
-@end
+// Rendering Backend Types
+typedef NS_ENUM(NSInteger, RenderingBackendType) {
+    RENDERING_BACKEND_SURFACE,    // SurfaceRenderer (Cocoa/UIKit drawing)
+    RENDERING_BACKEND_METAL,      // MetalRenderer (Metal GPU rendering)
+    RENDERING_BACKEND_VULKAN      // VulkanRenderer (future implementation)
+};
 
+// Rendering Backend Factory
+@interface RenderingBackendFactory : NSObject
+
++ (id<RenderingBackend>)createBackend:(RenderingBackendType)type 
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+                         withView:(UIView *)view;
+#else
+                         withView:(NSView *)view;
+#endif
+
+@end

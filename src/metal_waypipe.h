@@ -4,7 +4,7 @@
 #import <VideoToolbox/VideoToolbox.h>
 #import <AVFoundation/AVFoundation.h>
 #include "metal_dmabuf.h"
-#include "wayland_compositor.h"
+#include "WawonaCompositor.h"
 
 // Metal waypipe integration
 // Supports video codec encoding/decoding and Metal buffer sharing

@@ -14,7 +14,10 @@
 #else
 // Forward declarations for C code
 typedef struct objc_object* id;
-typedef void* IOSurfaceRef;
+// Forward declare IOSurfaceRef - actual definition comes from system headers
+// This avoids typedef conflicts when system headers are included
+struct __IOSurface;
+typedef struct __IOSurface* IOSurfaceRef;
 #endif
 
 // DMA-BUF emulation for macOS using IOSurface

@@ -6,8 +6,15 @@
 #import <Cocoa/Cocoa.h>
 #endif
 #import <Metal/Metal.h>
+
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+#define VK_USE_PLATFORM_IOS_MVK
+#else
+#define VK_USE_PLATFORM_MACOS_MVK
+#endif
+#define VK_USE_PLATFORM_METAL_EXT
 #import <vulkan/vulkan.h>
-#include "wayland_compositor.h"
+#include "WawonaCompositor.h"
 
 // Vulkan renderer using KosmicKrisp for EGL/OpenGL ES rendering
 // Converts Vulkan output to Metal textures for display in Metal view
@@ -28,7 +35,7 @@
 - (instancetype)initWithMetalDevice:(id<MTLDevice>)metalDevice;
 - (BOOL)initializeVulkan; // Initialize Vulkan using KosmicKrisp
 - (void)cleanupVulkan;
-- (void)renderEGLSurface:(struct wl_surface_impl *)surface; // Render EGL surface using Vulkan
+- (id<MTLTexture>)renderEGLSurface:(struct wl_surface_impl *)surface; // Render EGL surface using Vulkan
 - (id<MTLTexture>)convertVulkanImageToMetalTexture:(VkImage)vkImage width:(uint32_t)width height:(uint32_t)height; // Convert Vulkan image to Metal texture
 - (void)removeSurface:(struct wl_surface_impl *)surface;
 

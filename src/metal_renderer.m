@@ -1,6 +1,7 @@
 #import "metal_renderer.h"
 #import "metal_dmabuf.h"
 #import "metal_waypipe.h"
+#import "vulkan_renderer.h"
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -8,8 +9,10 @@
 #import <IOSurface/IOSurface.h>
 #endif
 #import <simd/simd.h>
-#include "wayland_compositor.h"
+#include "WawonaCompositor.h"
 #include "logging.h"
+#include "wayland_color_management.h"
+#include "wayland_viewporter.h"
 
 // Forward declaration
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
@@ -52,9 +55,19 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
 @property (nonatomic, assign) int32_t lastWidth;
 @property (nonatomic, assign) int32_t lastHeight;
 @property (nonatomic, assign) uint32_t lastFormat;
+@property (nonatomic, assign) CGColorSpaceRef colorSpace;
+@property (nonatomic, assign) float u0;
+@property (nonatomic, assign) float u1;
+@property (nonatomic, assign) float vTop;
+@property (nonatomic, assign) float vBottom;
 @end
 
 @implementation MetalSurface
+- (void)dealloc {
+    if (_colorSpace) {
+        CGColorSpaceRelease(_colorSpace);
+    }
+}
 @end
 
 @implementation MetalRenderer
@@ -71,6 +84,15 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
         
         _metalView.device = _device;
         _metalView.delegate = self;
+        
+        // Initialize Vulkan renderer
+        _vulkanRenderer = [[VulkanRenderer alloc] initWithMetalDevice:_device];
+        if (_vulkanRenderer) {
+            NSLog(@"✅ Vulkan renderer initialized inside Metal renderer");
+        } else {
+            NSLog(@"⚠️ Failed to initialize Vulkan renderer inside Metal renderer");
+        }
+
         // Enable continuous rendering for nested compositors (like Weston)
         // With enableSetNeedsDisplay=NO, MTKView uses its internal display link for continuous rendering
         // This ensures the view draws continuously at display refresh rate
@@ -85,6 +107,15 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
             metalLayer.displaySyncEnabled = YES;  // Sync with display refresh
 #endif
             metalLayer.presentsWithTransaction = NO;  // Use standard presentation
+            
+            // Set output color space to main display color space
+            // This ensures correct color rendering for HDR/WCG content
+            CGColorSpaceRef colorSpace = get_display_color_space();
+            if (colorSpace) {
+                metalLayer.colorspace = colorSpace;
+                CFRelease(colorSpace); // metalLayer retains it
+                NSLog(@"✅ Metal layer color space configured");
+            }
         }
         
         _commandQueue = [_device newCommandQueue];
@@ -297,8 +328,46 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
             }
         } else {
             // Neither SHM buffer nor custom buffer_data - likely an EGL buffer
+            
+            // Try using Vulkan renderer
+            if (self.vulkanRenderer) {
+                id<MTLTexture> vulkanTexture = [self.vulkanRenderer renderEGLSurface:surface];
+                if (vulkanTexture) {
+                    // We got a texture from Vulkan!
+                    // Update MetalSurface and return
+                    NSNumber *key = [NSNumber numberWithUnsignedLongLong:(unsigned long long)surface];
+                    @synchronized(self) {
+                        if (!_surfaceTextures) _surfaceTextures = [[NSMutableDictionary alloc] init];
+                        MetalSurface *ms = _surfaceTextures[key];
+                        if (!ms) {
+                            ms = [[MetalSurface alloc] init];
+                            ms.surface = surface;
+                            _surfaceTextures[key] = ms;
+                        }
+                        ms.texture = vulkanTexture;
+                        ms.frame = CGRectMake(surface->x, surface->y, surface->width, surface->height);
+                        
+                        // Update metadata to prevent unnecessary recreations if we were tracking it
+                        ms.lastBufferData = NULL; // Not using CPU buffer
+                        ms.lastWidth = surface->width;
+                        ms.lastHeight = surface->height;
+                        ms.lastFormat = 0; // EGL format
+                    }
+                    
+                    // Release buffer
+                     if (!surface->buffer_release_sent) {
+                        struct wl_client *release_buffer_client = wl_resource_get_client(surface->buffer_resource);
+                        if (release_buffer_client) {
+                            wl_buffer_send_release(surface->buffer_resource);
+                            surface->buffer_release_sent = true;
+                        }
+                    }
+                    return;
+                }
+            }
+
             // EGL buffers are not yet supported for rendering on macOS
-            NSLog(@"[METAL RENDERER] ⚠️ EGL buffer detected but not yet supported - skipping render");
+            NSLog(@"[METAL RENDERER] ⚠️ EGL buffer detected but Vulkan render failed - skipping render");
             
             // Still send buffer release to client
             if (!surface->buffer_release_sent) {
@@ -356,6 +425,7 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
             // For regular buffers, create texture directly
             
             // Try to create IOSurface-based texture (for DMA-BUF support)
+#if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
             IOSurfaceRef iosurface = metal_dmabuf_create_iosurface_from_data(data, width, height, stride, 0);
             if (iosurface) {
                 // Create Metal texture from IOSurface
@@ -375,6 +445,7 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
                     NSLog(@"[METAL] Failed to create texture from IOSurface");
                 }
             }
+#endif
             
             // Fallback to direct texture creation if IOSurface method failed
             if (!texture) {
@@ -403,6 +474,29 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
             metalSurface.lastWidth = width;
             metalSurface.lastHeight = height;
             metalSurface.lastFormat = format;
+
+            // Handle Color Management
+            if (surface->color_management) {
+                struct wp_color_management_surface_impl *color_surface = 
+                    (struct wp_color_management_surface_impl *)surface->color_management;
+                
+                if (color_surface && color_surface->current_image_description) {
+                    struct wp_image_description_impl *desc = color_surface->current_image_description;
+                    
+                    // Create color space if not already created
+                    if (!desc->color_space) {
+                        desc->color_space = create_colorspace_from_image_description(desc);
+                    }
+                    
+                    // Update surface color space
+                    if (desc->color_space) {
+                        if (metalSurface.colorSpace) {
+                            CGColorSpaceRelease(metalSurface.colorSpace);
+                        }
+                        metalSurface.colorSpace = CGColorSpaceRetain(desc->color_space);
+                    }
+                }
+            }
         } else {
             // Reuse existing texture - no need to recreate
             texture = metalSurface.texture;
@@ -411,6 +505,11 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
         // For nested compositors (like Weston), ALWAYS scale the surface to fill the entire Metal view
         // Get the Metal view frame (points) to determine the target size
         CGRect targetFrame = CGRectMake(surface->x, surface->y, width, height);
+        struct wl_viewport_impl *vp = wl_viewport_from_surface(surface);
+        if (vp && vp->has_destination) {
+            targetFrame.size.width = vp->dst_width;
+            targetFrame.size.height = vp->dst_height;
+        }
         if (_metalView) {
             CGRect viewBounds = _metalView.frame;  // Use frame.size (points) not bounds
             
@@ -493,6 +592,19 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
             }
         }
         metalSurface.frame = targetFrame;
+
+        // Set texture sampling coordinates (apply viewporter source crop if present)
+        float u0 = 0.0f, u1 = 1.0f, vTop = 0.0f, vBottom = 1.0f;
+        if (vp && vp->has_source) {
+            u0 = (float)(vp->src_x / (double)width);
+            u1 = (float)((vp->src_x + vp->src_width) / (double)width);
+            vTop = (float)(vp->src_y / (double)height);
+            vBottom = (float)((vp->src_y + vp->src_height) / (double)height);
+        }
+        metalSurface.u0 = u0;
+        metalSurface.u1 = u1;
+        metalSurface.vTop = vTop;
+        metalSurface.vBottom = vBottom;
     }
     
     // Release SHM buffer access if we used one
@@ -698,7 +810,7 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
             // Bind texture
             [renderEncoder setFragmentTexture:metalSurface.texture atIndex:0];
             
-            // Create vertex data for a full-screen quad
+            // Create vertex data for a textured quad
             // Vertices: position (x, y), texture coordinate (u, v)
             // Positions are in normalized device coordinates (-1 to 1), then transformed to screen space
             typedef struct {
@@ -726,21 +838,20 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
             }
             
             // Create vertices for a quad covering the surface frame
-            // Texture coordinates: Wayland buffers are top-to-bottom (Y=0 at top), Metal textures are bottom-to-top (Y=0 at bottom)
-            // So we need to flip the Y texture coordinate
+            // Texture coordinates: apply viewporter source crop and flip Y for Metal
             Vertex vertices[4];
             // Bottom-left (screen space)
             vertices[0].position = simd_make_float2(x0, y0);
-            vertices[0].texCoord = simd_make_float2(0.0f, 1.0f); // Top-left of Wayland buffer = bottom-left of Metal texture
+            vertices[0].texCoord = simd_make_float2(metalSurface.u0, metalSurface.vBottom);
             // Bottom-right (screen space)
             vertices[1].position = simd_make_float2(x1, y0);
-            vertices[1].texCoord = simd_make_float2(1.0f, 1.0f); // Top-right of Wayland buffer = bottom-right of Metal texture
+            vertices[1].texCoord = simd_make_float2(metalSurface.u1, metalSurface.vBottom);
             // Top-left (screen space)
             vertices[2].position = simd_make_float2(x0, y1);
-            vertices[2].texCoord = simd_make_float2(0.0f, 0.0f); // Bottom-left of Wayland buffer = top-left of Metal texture
+            vertices[2].texCoord = simd_make_float2(metalSurface.u0, metalSurface.vTop);
             // Top-right (screen space)
             vertices[3].position = simd_make_float2(x1, y1);
-            vertices[3].texCoord = simd_make_float2(1.0f, 0.0f); // Bottom-right of Wayland buffer = top-right of Metal texture
+            vertices[3].texCoord = simd_make_float2(metalSurface.u1, metalSurface.vTop);
             
             // Create vertex buffer
             id<MTLBuffer> vertexBuffer = [_device newBufferWithBytes:vertices
@@ -785,5 +896,12 @@ extern IOSurfaceRef metal_dmabuf_create_iosurface_from_data(void *data, uint32_t
     // MTKView handles bounds automatically based on the view's frame
 }
 
-@end
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+- (void)drawSurfacesInRect:(CGRect)dirtyRect {
+#else
+- (void)drawSurfacesInRect:(NSRect)dirtyRect {
+#endif
+    // Stub - MetalRenderer uses MTKViewDelegate (drawInMTKView) for rendering
+}
 
+@end

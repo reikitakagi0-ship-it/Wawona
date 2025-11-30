@@ -13,6 +13,8 @@ extern NSString * const kWawonaPrefsRenderMacOSPointer;
 extern NSString * const kWawonaPrefsMultipleClients;
 extern NSString * const kWawonaPrefsSwapCmdAsCtrl;
 extern NSString * const kWawonaPrefsWaypipeRSSupport;
+extern NSString * const kWawonaPrefsEnableTCPListener;
+extern NSString * const kWawonaPrefsTCPListenerPort;
 extern NSString * const kWawonaPrefsWaylandSocketDir;
 extern NSString * const kWawonaPrefsWaylandDisplayNumber;
 
@@ -55,6 +57,12 @@ extern NSString * const kWawonaPrefsWaylandDisplayNumber;
 // Waypipe
 - (BOOL)waypipeRSSupportEnabled;
 - (void)setWaypipeRSSupportEnabled:(BOOL)enabled;
+
+// Network / Remote Access
+- (BOOL)enableTCPListener;
+- (void)setEnableTCPListener:(BOOL)enabled;
+- (NSInteger)tcpListenerPort;
+- (void)setTCPListenerPort:(NSInteger)port;
 
 // Wayland Configuration
 - (NSString *)waylandSocketDir;

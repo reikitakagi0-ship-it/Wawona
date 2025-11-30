@@ -1,0 +1,53 @@
+name: Complete Test Suite
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  test-all:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        test-type: [dependencies, build-macos, build-ios, strict-compilation]
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Install dependencies
+        run: |
+          brew install cmake pkg-config meson ninja
+          brew install expat libffi libxml2 llvm libclc
+          pip3 install mako pyyaml
+      
+      - name: Test dependencies
+        if: matrix.test-type == 'dependencies'
+        run: |
+          make ios-wayland || exit 1
+          make ios-kosmickrisp || exit 1
+      
+      - name: Test macOS build
+        if: matrix.test-type == 'build-macos'
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j$(sysctl -n hw.ncpu)
+          test -f build/Wawona || exit 1
+      
+      - name: Test iOS build
+        if: matrix.test-type == 'build-ios'
+        run: |
+          make ios-build-compositor || exit 1
+          test -f build-ios/Wawona.app/Wawona || exit 1
+      
+      - name: Test strict compilation
+        if: matrix.test-type == 'strict-compilation'
+        run: |
+          # Verify -Werror is used
+          grep -r "Werror" scripts/ Makefile CMakeLists.txt || exit 1
+          # Verify strict flags
+          grep -r "Wall.*Wextra.*Wpedantic" scripts/ Makefile CMakeLists.txt || exit 1

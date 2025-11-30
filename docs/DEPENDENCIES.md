@@ -1,6 +1,6 @@
 # 📦 Wawona Dependencies & Setup Guide
 
-Complete guide to all dependencies and setup required to build and run Wawona on macOS.
+Complete guide to all dependencies and setup required to build and run Wawona on macOS and iOS.
 
 ---
 
@@ -9,8 +9,42 @@ Complete guide to all dependencies and setup required to build and run Wawona on
 This guide covers:
 - **Build dependencies** (compilers, build tools)
 - **Runtime dependencies** (libraries, frameworks)
+- **Dependency management** (cloned repositories with iOS/macOS conditionals)
 - **macOS-specific setup** (Launchd service configuration)
+- **iOS-specific setup** (Simulator and device builds)
 - **Verification steps** (how to check everything works)
+
+---
+
+## 📁 Repository Structure
+
+All dependencies are maintained as **forks** in the `dependencies/` directory:
+
+```
+Wawona/
+├── dependencies/          # All dependency repositories (cloned forks)
+│   ├── wayland/          # Wayland protocol library
+│   ├── waypipe/          # Wayland forwarding tool
+│   ├── kosmickrisp/      # Mesa-based Vulkan driver
+│   ├── pixman/           # Pixel manipulation library
+│   ├── libffi/           # Foreign function interface
+│   ├── libinput/         # Input device handling
+│   ├── lz4/              # LZ4 compression
+│   ├── zstd/             # ZSTD compression
+│   ├── epoll-shim/       # Linux epoll compatibility
+│   ├── xkbcommon/        # Keyboard handling
+│   ├── weston/           # Reference compositor
+│   ├── wayland-protocols/# Wayland protocol definitions
+│   └── libinput-macos-stubs/ # macOS compatibility stubs
+├── scripts/              # Build and installation scripts
+│   ├── install-*-ios.sh  # iOS cross-compilation scripts
+│   └── build-*.sh        # Build scripts
+├── resources/            # Resource files
+│   └── app-bundle/       # Info.plist files for app bundling
+├── docs/                 # Documentation
+├── tests/                # Test files
+└── logs/                 # Build logs
+```
 
 ---
 
@@ -32,13 +66,25 @@ These come with macOS or Xcode:
   ```
   Verify: `cmake --version`
 
+- [x] **Meson** (build system for Wayland, Pixman, etc.)
+  ```bash
+  brew install meson
+  ```
+  Verify: `meson --version`
+
+- [x] **Ninja** (build backend)
+  ```bash
+  brew install ninja
+  ```
+  Verify: `ninja --version`
+
 - [x] **pkg-config** (for finding libraries)
   ```bash
   brew install pkg-config
   ```
   Verify: `pkg-config --version`
 
-- [x] **Git** (for cloning dependencies if needed)
+- [x] **Git** (for cloning dependencies)
   ```bash
   # Usually already installed, or:
   brew install git
@@ -49,6 +95,7 @@ These come with macOS or Xcode:
 - **Clang** (comes with Xcode)
   - Verify: `clang --version`
   - Must support C11 and Objective-C
+  - iOS cross-compilation: `xcrun --sdk iphonesimulator clang --version`
 
 - **Objective-C Runtime** (included with macOS)
   - No installation needed
@@ -57,72 +104,71 @@ These come with macOS or Xcode:
 
 ## 📚 Core Dependencies
 
+All dependencies are **cloned and maintained as forks** in `dependencies/` with iOS/macOS conditionals.
+
 ### Wayland Libraries
 
-These are the **essential** Wayland protocol libraries.
+**Location**: `dependencies/wayland/`
 
-**⚠️ Important**: Homebrew's `wayland` formula has `depends_on :linux`, so `brew install wayland` will fail on macOS. However, **Wayland itself is platform-agnostic** and can be built from source on macOS.
-
-**Installation on macOS** (Build from Source):
-
-Since Homebrew won't install it, you must build wayland from source:
-
+**Installation**:
 ```bash
-# Install build dependencies
-brew install meson ninja pkg-config expat libffi libxml2
+# Clone Wayland repository
+git clone https://gitlab.freedesktop.org/wayland/wayland.git dependencies/wayland
 
-# Clone and build wayland
-git clone https://gitlab.freedesktop.org/wayland/wayland.git
-cd wayland
+# Build for macOS
+cd dependencies/wayland
 meson setup build -Ddocumentation=false
 meson compile -C build
 sudo meson install -C build
+
+# Build for iOS (cross-compilation)
+./scripts/install-wayland-ios.sh
 ```
 
 **What this installs**:
 - `libwayland-server` - Server-side Wayland protocol implementation
 - `libwayland-client` - Client-side Wayland protocol implementation
 - `wayland-scanner` - Tool to generate protocol bindings from XML
-- Headers in `/usr/local/include/wayland/` (or custom prefix)
+- Headers in `ios-install/include/wayland/` (iOS) or system prefix (macOS)
+
+**iOS Compatibility**:
+- Includes `ios_compat.h` for missing Linux functions (`accept4`, `memfd_create`, etc.)
+- Provides compatibility headers for `sys/prctl.h`, `sys/procctl.h`
 
 **Verify installation**:
 ```bash
+# macOS
 pkg-config --modversion wayland-server
 pkg-config --modversion wayland-client
-which wayland-scanner
-ls /usr/local/lib/libwayland*  # or your install prefix
+
+# iOS
+ls ios-install/lib/libwayland*.dylib
+ls ios-install/include/wayland/
 ```
-
-**Alternative**: If you have a custom install prefix, set `PKG_CONFIG_PATH`:
-```bash
-export PKG_CONFIG_PATH=/your/prefix/lib/pkgconfig:$PKG_CONFIG_PATH
-```
-
-### WLRoots (Compositor Toolkit)
-
-**⚠️ NOT USED**: We do NOT use WLRoots - it's Linux-only and cannot run on macOS. We build our own compositor implementation using only `libwayland-server` and macOS frameworks.
-
-**Why not WLRoots?**:
-- Requires DRM/KMS (Linux kernel display management)
-- Requires libinput (Linux input handling)
-- Requires udev (Linux device management)
-- Cannot function on macOS
-
-**Instead**, we implement:
-- Compositor logic ourselves in Objective-C
-- Rendering using CALayer (macOS native)
-- Input handling using NSEvent (macOS native)
-- Protocol handling using `libwayland-server` only
 
 ### Pixman (Pixel Manipulation)
 
+**Location**: `dependencies/pixman/`
+
+**Installation**:
 ```bash
-brew install pixman
+# Clone Pixman repository
+git clone https://gitlab.freedesktop.org/pixman/pixman.git dependencies/pixman
+
+# Build for macOS
+brew install pixman  # or build from source
+
+# Build for iOS
+./scripts/install-pixman-ios.sh
 ```
 
 **What this installs**:
 - `libpixman-1` - Low-level pixel manipulation library
-- Required by WLRoots for buffer operations
+- Required for buffer operations
+
+**iOS Compatibility**:
+- Includes `ios_compat.h` for `feenableexcept`, `getisax` functions
+- Fixed Clang attribute compatibility
 
 **Verify installation**:
 ```bash
@@ -131,12 +177,13 @@ pkg-config --modversion pixman-1
 
 ### KosmicKrisp Vulkan Driver (REQUIRED - Hard Dependency)
 
+**Location**: `dependencies/kosmickrisp/`
+
 **⚠️ CRITICAL**: KosmicKrisp is **required** for:
 - DMA-BUF support on macOS
 - EGL support (via Zink driver - OpenGL ES → Vulkan)
 - Hardware-accelerated rendering
-
-The compositor build will fail if it's not installed.
+- iOS Vulkan support
 
 **Installation**:
 ```bash
@@ -145,24 +192,33 @@ make kosmickrisp
 ```
 
 This will:
-1. Clone Mesa repository
+1. Clone Mesa repository to `dependencies/kosmickrisp/`
 2. Build KosmicKrisp Vulkan driver for macOS
-3. Build EGL with Zink driver (OpenGL ES → Vulkan translation)
-4. Install Vulkan driver to `/opt/homebrew/lib/libvulkan_kosmickrisp.dylib`
-5. Install EGL libraries (`libEGL.dylib`, `libGLESv2.dylib`)
-6. Install ICD file to `/opt/homebrew/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json`
+3. Build KosmicKrisp Vulkan driver for iOS
+4. Build EGL with Zink driver (OpenGL ES → Vulkan translation)
+5. Install Vulkan driver to `/opt/homebrew/lib/libvulkan_kosmickrisp.dylib` (macOS)
+6. Install Vulkan driver to `ios-install/lib/libvulkan_kosmickrisp.dylib` (iOS)
+7. Install ICD files for both platforms
 
-**EGL Support**: EGL is enabled with Zink driver, which translates OpenGL ES calls to Vulkan. Since KosmicKrisp provides Vulkan support, EGL clients will use hardware-accelerated rendering via Vulkan → Metal.
+**iOS Compatibility**:
+- Includes `ios_compat.h` for missing Linux functions
+- Provides compatibility headers for `sys/prctl.h`, `sys/procctl.h`, `sys/sysmacros.h`, `sys/mkdev.h`
+- Implements iOS fallbacks for `getrandom`, `reallocarray`, `qsort_s`, `secure_getenv`, `thrd_create`, `dl_iterate_phdr`
 
 **What this installs**:
 - `libvulkan_kosmickrisp.dylib` - Vulkan-to-Metal driver
 - Vulkan ICD (Installable Client Driver) configuration
-- Provides Vulkan 1.3 conformance on macOS
+- Provides Vulkan 1.3 conformance on macOS and iOS
 
 **Verify installation**:
 ```bash
+# macOS
 ls /opt/homebrew/lib/libvulkan_kosmickrisp.dylib
 ls /opt/homebrew/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json
+
+# iOS
+ls ios-install/lib/libvulkan_kosmickrisp.dylib
+ls ios-install/lib/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json
 ```
 
 **Dependencies** (automatically installed by `make kosmickrisp`):
@@ -173,6 +229,8 @@ ls /opt/homebrew/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json
 
 ### Waypipe (Wayland Forwarding)
 
+**Location**: `dependencies/waypipe/`
+
 **Installation**:
 ```bash
 # Build waypipe (Rust-based Wayland forwarding)
@@ -180,9 +238,11 @@ make waypipe
 ```
 
 This will:
-1. Build waypipe from source (Rust)
-2. Enable `dmabuf`, `video`, `lz4`, `zstd` features
-3. Install to `waypipe/target/release/waypipe`
+1. Clone waypipe repository to `dependencies/waypipe/`
+2. Build waypipe from source (Rust)
+3. Enable `dmabuf`, `video`, `lz4`, `zstd` features
+4. Install to `/opt/homebrew/bin/waypipe` (macOS)
+5. Install to `ios-install/bin/waypipe` (iOS)
 
 **What this provides**:
 - Wayland protocol forwarding over network/sockets
@@ -192,8 +252,12 @@ This will:
 
 **Verify installation**:
 ```bash
-./waypipe/target/release/waypipe --version
+# macOS
+waypipe --version
 # Should show: lz4=true, zstd=true, dmabuf=true, video=true
+
+# iOS
+ios-install/bin/waypipe --version
 ```
 
 **Dependencies** (automatically checked by `make waypipe`):
@@ -202,69 +266,89 @@ This will:
 - glslc or glslangValidator (for shader compilation)
 - KosmicKrisp Vulkan driver (hard dependency)
 
-### Colima (Docker Runtime for macOS)
+### libffi (Foreign Function Interface)
 
-**Optional but recommended** for running Linux Wayland clients:
+**Location**: `dependencies/libffi/`
 
+**Installation**:
 ```bash
-brew install colima
+# Build for iOS
+./scripts/install-libffi-ios.sh
 ```
 
 **What this provides**:
-- Docker runtime for macOS
-- VirtioFS support (required for Unix socket forwarding)
-- Linux container support
+- Foreign function interface library
+- Required by Wayland for dynamic function calls
 
-**Usage**:
+### libinput (Input Device Handling)
+
+**Location**: `dependencies/libinput/`
+
+**Installation**:
 ```bash
-# Start Colima
-colima start
+# Build for macOS
+make libinput
 
-# Run Linux Wayland client in container
-make colima-client
+# iOS support via compatibility stubs
 ```
 
----
+**What this provides**:
+- Input device handling (Linux-specific)
+- macOS compatibility stubs in `dependencies/libinput-macos-stubs/`
 
-## 🔗 WLRoots Dependencies (Auto-installed)
+### Compression Libraries
 
-When you install `wlroots` via Homebrew, it automatically installs these dependencies:
+**LZ4** (`dependencies/lz4/`):
+```bash
+./scripts/install-lz4-ios.sh
+```
 
-### Required by WLRoots:
+**ZSTD** (`dependencies/zstd/`):
+```bash
+./scripts/install-zstd-ios.sh
+```
 
-- **libdrm** (Linux Direct Rendering Manager)
-  - Note: On macOS, this is a stub/minimal version
-  - WLRoots uses it for buffer management abstractions
+Both provide compression support for Waypipe.
 
-- **libgbm** (Generic Buffer Management)
-  - Note: On macOS, this may be minimal/stub
-  - Used for GPU buffer management
+### epoll-shim (Linux epoll Compatibility)
 
-- **libinput** (Input Device Handling)
-  - Note: On macOS, we'll use NSEvent instead, but WLRoots expects this
-  - May be a stub/minimal version
+**Location**: `dependencies/epoll-shim/`
 
-- **libxkbcommon** (Keyboard Handling)
-  - Used for keyboard layout/mapping
-  - **Important**: We'll need this for keyboard input
+**Installation**:
+```bash
+./scripts/install-epoll-shim-ios.sh
+```
 
-- **libxcb** (X11 Protocol)
-  - Used by WLRoots for some internal abstractions
-  - May be minimal on macOS
+**What this provides**:
+- Linux `epoll` API compatibility for macOS/iOS
+- Required by Wayland for event handling
 
-- **mesa** (OpenGL/Vulkan)
-  - Graphics library
-  - On macOS, we'll primarily use Metal/CALayer, but WLRoots may use OpenGL
+### xkbcommon (Keyboard Handling)
 
-- **libseat** (Session Management)
-  - For seat/session handling
-  - May be minimal on macOS
+**Location**: `dependencies/xkbcommon/`
 
-### Optional but Recommended:
+**Installation**:
+```bash
+make xkbcommon
+```
 
-- **libudev** (Device Management)
-  - Linux device management
-  - Not needed on macOS (we use IOKit/NSEvent)
+**What this provides**:
+- Keyboard layout/mapping
+- Required for keyboard input handling
+
+### Weston (Reference Compositor)
+
+**Location**: `dependencies/weston/`
+
+**Installation**:
+```bash
+make weston
+```
+
+**What this provides**:
+- Reference Wayland compositor implementation
+- Useful for testing and comparison
+- Runs nested within Wawona
 
 ---
 
@@ -298,38 +382,6 @@ These come with macOS - **no installation needed**:
   - Part of Cocoa, but can be explicitly linked
   - macOS UI framework
 
-### Verify Frameworks Available:
-
-```bash
-# Check framework paths
-ls /System/Library/Frameworks/Cocoa.framework
-ls /System/Library/Frameworks/QuartzCore.framework
-ls /System/Library/Frameworks/CoreVideo.framework
-```
-
----
-
-## 🧪 Testing Dependencies (Optional)
-
-### For Testing Wayland Clients:
-
-- **Qt6 with Wayland support** (for testing QtWayland apps)
-  ```bash
-  brew install qt6
-  ```
-  Verify: `qmake6 --version`
-
-- **GTK4 with Wayland** (for testing GTK apps)
-  ```bash
-  brew install gtk4
-  ```
-
-- **Weston** (reference compositor, for comparison)
-  ```bash
-  brew install weston
-  ```
-  Note: This is optional - mainly for reference/testing
-
 ---
 
 ## 📋 Complete Installation Script
@@ -340,15 +392,10 @@ Here's a one-liner to install **everything**:
 # Install build tools (via Homebrew)
 brew install cmake pkg-config pixman meson ninja expat libffi libxml2
 
-# Build wayland from source (Homebrew formula requires Linux)
-git clone https://gitlab.freedesktop.org/wayland/wayland.git
-cd wayland
-meson setup build -Ddocumentation=false
-meson compile -C build
-sudo meson install -C build
-
-# Optional: Install testing tools
-brew install qt6 gtk4
+# Clone all dependencies (they will be built as needed)
+make ios-wayland    # Build Wayland for iOS
+make kosmickrisp    # Build KosmicKrisp for macOS and iOS
+make waypipe        # Build Waypipe for macOS and iOS
 ```
 
 ### Verify All Dependencies:
@@ -366,32 +413,81 @@ pkg-config --version
 echo -n "wayland-server: "
 pkg-config --modversion wayland-server 2>/dev/null || echo "NOT FOUND"
 
-echo -n "wlroots: "
-pkg-config --modversion wlroots 2>/dev/null || echo "NOT FOUND"
-
 echo -n "pixman: "
 pkg-config --modversion pixman-1 2>/dev/null || echo "NOT FOUND"
 
-echo -n "KosmicKrisp Vulkan driver: "
+echo -n "KosmicKrisp Vulkan driver (macOS): "
 test -f /opt/homebrew/lib/libvulkan_kosmickrisp.dylib && echo "OK" || echo "NOT FOUND"
 
-echo -n "waypipe: "
-test -f waypipe/target/release/waypipe && ./waypipe/target/release/waypipe --version 2>/dev/null | head -1 || echo "NOT FOUND"
+echo -n "KosmicKrisp Vulkan driver (iOS): "
+test -f ios-install/lib/libvulkan_kosmickrisp.dylib && echo "OK" || echo "NOT FOUND"
+
+echo -n "waypipe (macOS): "
+test -f /opt/homebrew/bin/waypipe && waypipe --version 2>/dev/null | head -1 || echo "NOT FOUND"
+
+echo -n "waypipe (iOS): "
+test -f ios-install/bin/waypipe && ios-install/bin/waypipe --version 2>/dev/null | head -1 || echo "NOT FOUND"
 
 echo -n "Cocoa framework: "
 test -d /System/Library/Frameworks/Cocoa.framework && echo "OK" || echo "NOT FOUND"
 
-echo -n "QuartzCore framework: "
-test -d /System/Library/Frameworks/QuartzCore.framework && echo "OK" || echo "NOT FOUND"
-
 echo "Done!"
 ```
 
-Save as `check-deps.sh`, make executable: `chmod +x check-deps.sh`, run: `./check-deps.sh`
+Save as `scripts/check-deps.sh`, make executable: `chmod +x scripts/check-deps.sh`, run: `./scripts/check-deps.sh`
 
 ---
 
-## 🚀 Launchd Service Setup
+## 🔄 Dependency Fork Management
+
+All dependencies are maintained as **forks** with iOS/macOS conditionals:
+
+### Fork Strategy
+
+1. **Clone upstream repositories** into `dependencies/`
+2. **Add iOS compatibility layers**:
+   - `ios_compat.h` - Function compatibility shims
+   - `ios_sys_headers.h` - System header compatibility
+   - Conditional compilation flags for iOS vs macOS
+
+3. **Maintain compatibility**:
+   - Keep forks in sync with upstream
+   - Add iOS-specific patches as needed
+   - Document all modifications
+
+### Adding iOS Support to a Dependency
+
+1. **Clone the repository**:
+   ```bash
+   git clone <upstream-url> dependencies/<dependency-name>
+   ```
+
+2. **Create iOS compatibility header**:
+   ```c
+   // dependencies/<dependency>/ios_compat.h
+   #ifdef __APPLE__
+   // iOS compatibility implementations
+   #endif
+   ```
+
+3. **Update build system**:
+   - Add iOS cross-compilation support
+   - Include compatibility headers
+   - Add conditional compilation flags
+
+4. **Create installation script**:
+   ```bash
+   # scripts/install-<dependency>-ios.sh
+   # Cross-compile for iOS Simulator
+   ```
+
+5. **Update Makefile**:
+   - Add build targets
+   - Reference new script paths
+
+---
+
+## 🚀 Launchd Service Setup (macOS)
 
 Since you want to use **macOS Launchd** (not systemd), here's how to set up the compositor as a service.
 
@@ -442,98 +538,6 @@ Runs as your user, starts on login.
 launchctl load ~/Library/LaunchAgents/com.aspauldingcode.wawona.compositor.plist
 ```
 
-**Unload the service**:
-```bash
-launchctl unload ~/Library/LaunchAgents/com.aspauldingcode.wawona.compositor.plist
-```
-
-**Check status**:
-```bash
-launchctl list | grep wawona
-```
-
-### Option 2: System-Wide Daemon
-
-Runs as root, starts on boot (requires admin).
-
-**Create**: `/Library/LaunchDaemons/com.aspauldingcode.wawona.compositor.plist`
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.aspauldingcode.wawona.compositor</string>
-    
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/Wawona</string>
-    </array>
-    
-    <key>RunAtLoad</key>
-    <true/>
-    
-    <key>KeepAlive</key>
-    <true/>
-    
-    <key>StandardOutPath</key>
-    <string>/var/log/wawona.log</string>
-    
-    <key>StandardErrorPath</key>
-    <string>/var/log/wawona.error.log</string>
-    
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>WAYLAND_DISPLAY</key>
-        <string>wayland-0</string>
-    </dict>
-    
-    <key>UserName</key>
-    <string>yourusername</string>
-</dict>
-</plist>
-```
-
-**Load** (requires sudo):
-```bash
-sudo launchctl load /Library/LaunchDaemons/com.aspauldingcode.wawona.compositor.plist
-```
-
-### Launchd Service Management Commands
-
-```bash
-# Load service
-launchctl load ~/Library/LaunchAgents/com.aspauldingcode.wawona.compositor.plist
-
-# Unload service
-launchctl unload ~/Library/LaunchAgents/com.aspauldingcode.wawona.compositor.plist
-
-# Start service (if loaded but not running)
-launchctl start com.aspauldingcode.wawona.compositor
-
-# Stop service
-launchctl stop com.aspauldingcode.wawona.compositor
-
-# Check if running
-launchctl list | grep wawona
-
-# View logs
-tail -f /tmp/wawona.log
-tail -f /tmp/wawona.error.log
-```
-
-### Launchd Plist Keys Explained
-
-- **Label**: Unique identifier for the service
-- **ProgramArguments**: Command and arguments to run
-- **RunAtLoad**: Start when plist is loaded
-- **KeepAlive**: Restart if it crashes
-- **StandardOutPath**: Where stdout goes
-- **StandardErrorPath**: Where stderr goes
-- **EnvironmentVariables**: Environment variables to set
-- **UserName**: Run as this user (for LaunchDaemons)
-
 ---
 
 ## 🔍 Dependency Verification Checklist
@@ -542,18 +546,20 @@ Use this checklist to verify everything is installed:
 
 - [ ] Xcode Command Line Tools installed
 - [ ] CMake installed and in PATH
+- [ ] Meson and Ninja installed
 - [ ] pkg-config installed
-- [ ] wayland-server library found
-- [ ] wayland-client library found
-- [ ] wlroots library found
+- [ ] wayland-server library found (macOS)
+- [ ] wayland libraries found (iOS: `ios-install/lib/`)
 - [ ] pixman library found
+- [ ] KosmicKrisp Vulkan driver installed (macOS and iOS)
+- [ ] waypipe installed (macOS and iOS)
 - [ ] Cocoa framework available
 - [ ] QuartzCore framework available
 - [ ] CoreVideo framework available
 - [ ] Build succeeds (`cmake .. && make`)
 - [ ] Compositor runs (`./Wawona`)
 - [ ] Wayland socket created (`ls /tmp/wayland-*`)
-- [ ] Launchd plist created (if using service)
+- [ ] iOS build succeeds (`make ios-build-compositor`)
 
 ---
 
@@ -584,35 +590,24 @@ pkg-config --cflags wayland-server
 
 # Verify headers exist:
 ls /opt/homebrew/include/wayland/wayland-server.h
+ls ios-install/include/wayland/wayland-server.h
 ```
 
-### Launchd service won't start
+### iOS build failures
 
-**Problem**: Service fails to launch
+**Problem**: iOS cross-compilation fails
 
 **Solution**:
 ```bash
-# Check logs
-tail -f /tmp/wawona.error.log
+# Check iOS SDK
+xcrun --sdk iphonesimulator --show-sdk-path
 
-# Check plist syntax
-plutil -lint ~/Library/LaunchAgents/com.aspauldingcode.wawona.compositor.plist
+# Verify cross-compilation tools
+xcrun --sdk iphonesimulator clang --version
 
-# Test manually first
-/path/to/Wawona
-```
-
-### Wayland socket permissions
-
-**Problem**: Clients can't connect to socket
-
-**Solution**:
-```bash
-# Check socket permissions
-ls -la /tmp/wayland-*
-
-# Should be readable/writable by your user
-# If not, check umask and socket creation code
+# Check dependency installation
+ls ios-install/lib/
+ls ios-install/include/
 ```
 
 ---
@@ -628,21 +623,20 @@ After installing dependencies:
    make -j8
    ```
 
-2. **Test manually**:
+2. **Build for iOS**:
+   ```bash
+   make ios-build-compositor
+   ```
+
+3. **Test manually**:
    ```bash
    ./Wawona
    ```
 
-3. **Set up Launchd** (if desired):
+4. **Set up Launchd** (if desired):
    - Create plist file
    - Load service
    - Verify it's running
-
-4. **Test with client**:
-   ```bash
-   export WAYLAND_DISPLAY=wayland-0
-   ./test-client -platform wayland
-   ```
 
 ---
 
@@ -651,9 +645,9 @@ After installing dependencies:
 - **Homebrew**: https://brew.sh
 - **Launchd Documentation**: `man launchd.plist`
 - **Wayland Protocol**: https://wayland.freedesktop.org/docs/html/
-- **WLRoots**: https://gitlab.freedesktop.org/wlroots/wlroots
+- **Mesa/KosmicKrisp**: https://gitlab.freedesktop.org/mesa/mesa
+- **Waypipe**: https://gitlab.freedesktop.org/mstoeckl/waypipe
 
 ---
 
-_Last updated: [Date]_
-
+_Last updated: November 2024_

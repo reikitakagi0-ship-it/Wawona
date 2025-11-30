@@ -9,6 +9,8 @@ macos_wlcompositor
 *.o
 *.a
 *.dylib
+*.app
+*.framework
 
 # CMake cache
 CMakeCache.txt
@@ -23,19 +25,9 @@ cmake_install.cmake
 # Wayland runtime
 wayland-*
 
-# Wayland build directory (from install-wayland.sh)
-wayland/
-wayland-build/
-
-# Log files (build logs in project, runtime logs in /tmp)
+# Log files
 *.log
-wayland-install.log
-compositor-build.log
-compositor-run.log
-compositor.log
-client-build.log
-client-run.log
-client.log
+logs/
 
 # Test client
 test_client
@@ -48,9 +40,6 @@ test_xdg-shell-client-protocol.c
 *.swp
 *.swo
 *~
-
-# Launchd (keep template, ignore customized versions)
-# com.calayerwayland.compositor.plist
 
 # Node.js (docs)
 docs/node_modules/
@@ -71,11 +60,8 @@ Containerization.framework/
 container-build/
 containerization-build/
 
-# Container build cache (in user's Library/Caches)
-# Note: This is outside the repo, but listed for reference
-# ~/Library/Caches/container-build/
+# Dependencies (cloned git repos - scripts will generate these from scratch)
+dependencies/
 
-# Container build logs
-/tmp/container-build*.log
-container-build*.log
-
+# IDE files
+.cursor/

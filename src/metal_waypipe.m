@@ -1,6 +1,6 @@
 #import "metal_waypipe.h"
 #import "metal_dmabuf.h"
-#import "wayland_compositor.h"
+#import "WawonaCompositor.h"
 #import <Metal/Metal.h>
 #import <VideoToolbox/VideoToolbox.h>
 #import <AVFoundation/AVFoundation.h>

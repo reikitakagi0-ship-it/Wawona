@@ -7,18 +7,14 @@ set -e
 # Find booted iOS Simulator device
 # If IOS_SIMULATOR_MODE is set, prefer "DebugPhone" device
 if [ "${IOS_SIMULATOR_MODE:-0}" = "1" ]; then
-    DEVICE_ID=$(xcrun simctl list devices booted | grep "DebugPhone" | grep -oE '[0-9A-F-]{36}' || echo "")
-    if [ -z "$DEVICE_ID" ]; then
-        echo "No booted 'DebugPhone' iOS Simulator device found" >&2
-        echo "Make sure DebugPhone is booted: xcrun simctl boot <device-id>" >&2
-        exit 1
-    fi
+    DEVICE_ID=$(xcrun simctl list devices booted | grep -E "DebugPhone|iPhone|iPad" | head -1 | grep -oE '[0-9A-F-]{36}' || echo "")
 else
     DEVICE_ID=$(xcrun simctl list devices booted | grep -E "iPhone|iPad" | head -1 | grep -oE '[0-9A-F-]{36}' || echo "")
-    if [ -z "$DEVICE_ID" ]; then
-        echo "No booted iOS Simulator device found" >&2
-        exit 1
-    fi
+fi
+if [ -z "$DEVICE_ID" ]; then
+    echo "No booted iOS Simulator device found" >&2
+    echo "Start a simulator: xcrun simctl boot <device-id>" >&2
+    exit 1
 fi
 
 # Get app data container
@@ -29,10 +25,13 @@ if [ -z "$DATA_CONTAINER" ]; then
     exit 1
 fi
 
-# Wayland socket is in /tmp/wawona-ios on host filesystem (shortest path to avoid Unix socket 108-byte limit)
-# iOS Simulator can access host /tmp directory
+# Prefer app container tmp directory; fall back to host /tmp if available
 # Socket name is "w0" instead of "wayland-0" for shorter path
-RUNTIME_DIR="/tmp/wawona-ios"
+APP_TMP_DIR="$DATA_CONTAINER/tmp"
+RUNTIME_DIR="$APP_TMP_DIR"
+if [ -d "/tmp/wawona-ios" ] && [ -w "/tmp/wawona-ios" ]; then
+    RUNTIME_DIR="/tmp/wawona-ios"
+fi
 
 # Note: Directory might not exist yet if Wawona hasn't been launched
 # The retry loop below will wait for it to be created (up to 10 seconds)
@@ -105,4 +104,3 @@ fi
 
 # Output socket path and XDG_RUNTIME_DIR
 echo "$SOCKET|$RUNTIME_DIR"
-

@@ -1,0 +1,32 @@
+# App Store Build Configuration
+# Builds Wawona with App Store compliance (no .dylibs, frameworks only)
+
+.PHONY: kosmickrisp-framework wayland-static app-store-build
+
+# Build KosmicKrisp as framework (not .dylib)
+kosmickrisp-framework:
+	@echo "Building KosmicKrisp as framework..."
+	@cd dependencies/kosmickrisp && \
+	meson setup build-framework \
+		-Dframework=true \
+		-Dstatic=true \
+		-Dprefix=$(PWD)/frameworks/KosmicKrisp.framework
+
+# Build Wayland as static libraries
+wayland-static:
+	@echo "Building Wayland as static libraries..."
+	@cd dependencies/wayland && \
+	meson setup build-static \
+		-Ddefault_library=static \
+		-Dprefix=$(PWD)/frameworks/Wayland.framework
+
+# Build for App Store
+app-store-build: kosmickrisp-framework wayland-static
+	@echo "Building Wawona for App Store..."
+	@cmake -B build-appstore \
+		-DAPP_STORE_BUILD=ON \
+		-DBUILD_SHARED_LIBS=OFF \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_FRAMEWORK_PATH=$(PWD)/frameworks
+	@cmake --build build-appstore
+	@echo "App Store build complete: build-appstore/Wawona.app"
