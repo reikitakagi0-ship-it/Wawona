@@ -231,14 +231,19 @@ int gbm_device_get_format_modifier_plane_count(struct gbm_device *gbm,
 struct gbm_bo *gbm_bo_create(struct gbm_device *gbm,
                               uint32_t width, uint32_t height,
                               uint32_t format, uint32_t flags) {
+    struct gbm_bo *bo;
+    uint32_t fourcc;
+    uint32_t iosurface_format;
+    uint32_t bytes_per_pixel;
+
     if (!gbm || width == 0 || height == 0) return NULL;
     
-    struct gbm_bo *bo = calloc(1, sizeof(*bo));
+    bo = calloc(1, sizeof(*bo));
     if (!bo) return NULL;
     
-    uint32_t fourcc = gbm_format_to_value(format);
-    uint32_t iosurface_format = fourcc_to_iosurface_format(fourcc);
-    uint32_t bytes_per_pixel = format_bytes_per_pixel(fourcc);
+    fourcc = gbm_format_to_value(format);
+    iosurface_format = fourcc_to_iosurface_format(fourcc);
+    bytes_per_pixel = format_bytes_per_pixel(fourcc);
     
     bo->metal_buffer = metal_dmabuf_create_buffer(width, height, iosurface_format);
     if (!bo->metal_buffer) {
@@ -408,21 +413,27 @@ uint32_t gbm_bo_get_iosurface_id(struct gbm_bo *bo) {
 // Map buffer for CPU access (read/write)
 void *gbm_bo_map(struct gbm_bo *bo, uint32_t x, uint32_t y, uint32_t width, uint32_t height,
                  uint32_t flags, uint32_t *stride, void **map_data) {
+    IOSurfaceRef iosurface;
+    IOReturn ret;
+    void *base;
+    uint32_t surface_stride;
+    void *ptr;
+
     if (!bo || !bo->metal_buffer || !bo->metal_buffer->iosurface) {
         if (stride) *stride = 0;
         if (map_data) *map_data = NULL;
         return NULL;
     }
     
-    IOSurfaceRef iosurface = bo->metal_buffer->iosurface;
+    iosurface = bo->metal_buffer->iosurface;
     
     // Lock IOSurface for CPU access
     // Note: iOS only supports kIOSurfaceLockReadOnly, but we need read-write access
     // On iOS, we'll use ReadOnly and hope the surface allows writes (some do)
     #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-    IOReturn ret = IOSurfaceLock(iosurface, kIOSurfaceLockReadOnly, NULL);
+    ret = IOSurfaceLock(iosurface, kIOSurfaceLockReadOnly, NULL);
     #else
-    IOReturn ret = IOSurfaceLock(iosurface, 0, NULL);
+    ret = IOSurfaceLock(iosurface, 0, NULL);
     #endif
     if (ret != kIOReturnSuccess) {
         if (stride) *stride = 0;
@@ -430,14 +441,14 @@ void *gbm_bo_map(struct gbm_bo *bo, uint32_t x, uint32_t y, uint32_t width, uint
         return NULL;
     }
     
-    void *base = IOSurfaceGetBaseAddress(iosurface);
-    uint32_t surface_stride = (uint32_t)IOSurfaceGetBytesPerRow(iosurface);
+    base = IOSurfaceGetBaseAddress(iosurface);
+    surface_stride = (uint32_t)IOSurfaceGetBytesPerRow(iosurface);
     
     if (stride) *stride = surface_stride;
     if (map_data) *map_data = bo;  // Store bo pointer for unmapping
     
     // Calculate offset for x,y (assuming 4 bytes per pixel)
-    void *ptr = (char *)base + (y * surface_stride) + (x * 4);
+    ptr = (char *)base + (y * surface_stride) + (x * 4);
     
     (void)width;   // Unused but kept for API compatibility
     (void)height;  // Unused but kept for API compatibility
@@ -448,10 +459,11 @@ void *gbm_bo_map(struct gbm_bo *bo, uint32_t x, uint32_t y, uint32_t width, uint
 
 // Unmap buffer after CPU access
 void gbm_bo_unmap(struct gbm_bo *bo, void *map_data) {
+    IOSurfaceRef iosurface;
     if (!bo || !bo->metal_buffer || !bo->metal_buffer->iosurface) return;
     if (map_data != bo) return;  // Sanity check
     
-    IOSurfaceRef iosurface = bo->metal_buffer->iosurface;
+    iosurface = bo->metal_buffer->iosurface;
     #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
     IOSurfaceUnlock(iosurface, kIOSurfaceLockReadOnly, NULL);
     #else
@@ -466,9 +478,11 @@ void gbm_bo_unmap(struct gbm_bo *bo, void *map_data) {
 struct gbm_surface *gbm_surface_create(struct gbm_device *gbm,
                                        uint32_t width, uint32_t height,
                                        uint32_t format, uint32_t flags) {
+    struct gbm_surface *surface;
+
     if (!gbm || width == 0 || height == 0) return NULL;
     
-    struct gbm_surface *surface = calloc(1, sizeof(*surface));
+    surface = calloc(1, sizeof(*surface));
     if (!surface) return NULL;
     
     surface->gbm = gbm;
@@ -539,10 +553,12 @@ void gbm_surface_destroy(struct gbm_surface *surface) {
 }
 
 struct gbm_bo *gbm_surface_lock_front_buffer(struct gbm_surface *surface) {
+    struct gbm_bo *bo;
+
     if (!surface) return NULL;
     
     // Return current back buffer and advance
-    struct gbm_bo *bo = surface->back_buffers[surface->current_back_buffer];
+    bo = surface->back_buffers[surface->current_back_buffer];
     if (bo) {
         gbm_bo_ref(bo);  // Increment refcount
         surface->current_back_buffer = (surface->current_back_buffer + 1) % surface->num_back_buffers;

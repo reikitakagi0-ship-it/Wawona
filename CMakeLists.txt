@@ -66,13 +66,13 @@ if(IS_IOS)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -arch arm64 -isysroot ${CMAKE_OSX_SYSROOT} -mios-simulator-version-min=15.0")
     set(CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS} -arch arm64 -isysroot ${CMAKE_OSX_SYSROOT} -mios-simulator-version-min=15.0 -fobjc-arc")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lobjc")
-    # iOS: Enable warnings-as-errors (same as macOS)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic -Wno-error")
-    set(CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS} -Wall -Wextra -Wpedantic -Wno-error")
+    # iOS: Enable warnings-as-errors (fail build on warnings)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic -Werror")
+    set(CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS} -Wall -Wextra -Wpedantic -Werror")
 else()
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic -Wno-error")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic -Werror")
     set(CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS} -fobjc-arc")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-w")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
 endif()
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-prototypes -Wmissing-prototypes")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wold-style-definition -Wmissing-declarations")
@@ -88,6 +88,8 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstack-protector -fstack-protector-strong")
 # macOS doesn't support -pie flag for executables (only for shared libraries)
 # Use -fPIC for position-independent code instead
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
+# Enhanced security flags
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_FORTIFY_SOURCE=2 -fstack-protector-strong -Wstack-protector")
 
 # Suppress warnings to achieve clean builds across platform stubs
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -Wno-sign-conversion -Wno-implicit-float-conversion -Wno-missing-field-initializers -Wno-format-nonliteral -Wno-deprecated-declarations -Wno-cast-qual -Wno-empty-translation-unit -Wno-format-pedantic")
@@ -105,6 +107,7 @@ set(CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS} -Wno-deprecated-declarations")
 
 # Optimization flags - maximum optimization with debug info
 set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -DNDEBUG -flto")
+set(CMAKE_OBJC_FLAGS_RELEASE "${CMAKE_OBJC_FLAGS_RELEASE} -O3 -DNDEBUG -flto")
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -g3 -O0 -DDEBUG")
 set(CMAKE_OBJC_FLAGS_RELEASE "${CMAKE_OBJC_FLAGS_RELEASE} -O3 -DNDEBUG -flto")
 set(CMAKE_OBJC_FLAGS_DEBUG "${CMAKE_OBJC_FLAGS_DEBUG} -g3 -O0 -DDEBUG")
@@ -184,28 +187,70 @@ else()
 endif()
 
 # Source files - Unified for both platforms
+# Organized by component for better separation of concerns
 set(SOURCES
-    src/main.m
-    src/WawonaUIHelpers.m
-    src/WawonaCompositor.m
-    src/WawonaCompositor.h
-    src/logging.c
-    src/logging.h
-    src/wayland_output.c
-    src/wayland_output.h
-    src/wayland_seat.c
-    src/wayland_seat.h
-    src/wayland_shm.c
-    src/wayland_shm.h
-    src/wayland_subcompositor.c
-    src/wayland_subcompositor.h
-    src/wayland_data_device_manager.c
-    src/wayland_data_device_manager.h
-    src/wayland_primary_selection.c
-    src/wayland_primary_selection.h
-    src/wayland_protocol_stubs.c
-    src/wayland_protocol_stubs.h
-    src/cursor_shape_bridge.m
+    # Core compositor
+    src/core/main.m
+    src/core/WawonaCompositor.m
+    src/core/WawonaCompositor.h
+    
+    # Logging
+    src/logging/logging.c
+    src/logging/logging.h
+    
+    # Wayland protocol implementations
+    src/wayland/wayland_output.c
+    src/wayland/wayland_output.h
+    src/wayland/wayland_shm.c
+    src/wayland/wayland_shm.h
+    src/wayland/wayland_subcompositor.c
+    src/wayland/wayland_subcompositor.h
+    src/wayland/wayland_data_device_manager.c
+    src/wayland/wayland_data_device_manager.h
+    src/wayland/wayland_primary_selection.c
+    src/wayland/wayland_primary_selection.h
+    src/wayland/wayland_protocol_stubs.c
+    src/wayland/wayland_protocol_stubs.h
+    src/wayland/wayland_viewporter.c
+    src/wayland/wayland_viewporter.h
+    src/wayland/wayland_fullscreen_shell.c
+    src/wayland/wayland_fullscreen_shell.h
+    src/wayland/wayland_shell.c
+    src/wayland/wayland_shell.h
+    src/wayland/wayland_gtk_shell.c
+    src/wayland/wayland_gtk_shell.h
+    src/wayland/wayland_plasma_shell.c
+    src/wayland/wayland_plasma_shell.h
+    src/wayland/wayland_qt_extensions.c
+    src/wayland/wayland_qt_extensions.h
+    src/wayland/wayland_screencopy.c
+    src/wayland/wayland_screencopy.h
+    src/wayland/wayland_presentation.c
+    src/wayland/wayland_presentation.h
+    src/wayland/wayland_color_management.c
+    src/wayland/wayland_color_management.h
+    src/wayland/wayland_linux_dmabuf.c
+    src/wayland/wayland_linux_dmabuf.h
+    src/wayland/wayland_drm.c
+    src/wayland/wayland_drm.h
+    src/wayland/wayland_idle_inhibit.c
+    src/wayland/wayland_idle_inhibit.h
+    src/wayland/wayland_pointer_gestures.c
+    src/wayland/wayland_pointer_gestures.h
+    src/wayland/wayland_relative_pointer.c
+    src/wayland/wayland_relative_pointer.h
+    src/wayland/wayland_pointer_constraints.c
+    src/wayland/wayland_pointer_constraints.h
+    src/wayland/wayland_tablet.c
+    src/wayland/wayland_tablet.h
+    src/wayland/wayland_idle_manager.c
+    src/wayland/wayland_idle_manager.h
+    src/wayland/wayland_keyboard_shortcuts.c
+    src/wayland/wayland_keyboard_shortcuts.h
+    src/wayland/xdg_shell.c
+    src/wayland/xdg_shell.h
+    
+    # Wayland protocol definitions (generated)
     src/protocols/primary-selection-protocol.c
     src/protocols/primary-selection-protocol.h
     src/protocols/xdg-activation-protocol.c
@@ -224,81 +269,58 @@ set(SOURCES
     src/protocols/xdg-toplevel-icon-protocol.h
     src/protocols/fullscreen-shell-unstable-v1-protocol.c
     src/protocols/fullscreen-shell-unstable-v1-protocol.h
-    src/surface_renderer.m
-    src/surface_renderer.h
-    src/input_handler.m
-    src/input_handler.h
+    src/protocols/linux-dmabuf-unstable-v1-protocol.c
+    src/protocols/linux-dmabuf-unstable-v1-protocol.h
     src/protocols/xdg-shell-protocol.c
     src/protocols/xdg-shell-protocol.h
-    src/xdg_shell.c
-    src/xdg_shell.h
-    src/wayland_viewporter.c
-    src/wayland_viewporter.h
-    src/wayland_fullscreen_shell.c
-    src/wayland_fullscreen_shell.h
     src/protocols/viewporter-protocol.c
     src/protocols/viewporter-protocol.h
-    src/wayland_shell.c
-    src/wayland_gtk_shell.c
-    src/wayland_gtk_shell.h
-    src/wayland_plasma_shell.c
-    src/wayland_plasma_shell.h
-    src/wayland_qt_extensions.c
-    src/wayland_qt_extensions.h
-    src/wayland_shell.h
-    src/wayland_screencopy.c
-    src/wayland_screencopy.h
-    src/wayland_presentation.c
-    src/wayland_presentation.h
     src/protocols/presentation-time-protocol.h
-    # presentation-time-protocol.c excluded - provided by KosmicKrisp
-    src/wayland_color_management.c
-    src/wayland_color_management.h
     src/protocols/color-management-v1-protocol.h
-    # color-management-v1-protocol.c excluded - provided by KosmicKrisp
-    src/wayland_linux_dmabuf.c
-    src/wayland_linux_dmabuf.h
-    src/wayland_drm.c
-    src/wayland_drm.h
-    src/wayland_idle_inhibit.c
-    src/wayland_idle_inhibit.h
-    src/wayland_pointer_gestures.c
-    src/wayland_pointer_gestures.h
-    src/wayland_relative_pointer.c
-    src/wayland_relative_pointer.h
-    src/wayland_pointer_constraints.c
-    src/wayland_pointer_constraints.h
-    src/metal_renderer.m
-    src/metal_renderer.h
-    src/metal_dmabuf.m
-    src/metal_dmabuf.h
-    src/metal_waypipe.m
-    src/metal_waypipe.h
-    
     src/protocols/tablet-stub.c
     
-    src/egl_buffer_handler.h
-    src/wayland_tablet.c
-    src/wayland_tablet.h
-    src/wayland_idle_manager.c
-    src/wayland_idle_manager.h
-    src/wayland_keyboard_shortcuts.c
-    src/wayland_keyboard_shortcuts.h
-    src/WawonaPreferences.m
-    src/WawonaPreferences.h
-    src/WawonaPreferencesManager.m
-    src/WawonaPreferencesManager.h
-    src/WawonaAboutPanel.m
-    src/WawonaAboutPanel.h
+    # Rendering
+    src/rendering/surface_renderer.m
+    src/rendering/surface_renderer.h
+    src/rendering/metal_renderer.m
+    src/rendering/metal_renderer.h
+    src/rendering/metal_dmabuf.m
+    src/rendering/metal_dmabuf.h
+    src/rendering/metal_waypipe.m
+    src/rendering/metal_waypipe.h
+    src/rendering/rendering_backend.m
+    src/rendering/rendering_backend.h
+    src/rendering/vulkan_renderer.m
+    src/rendering/vulkan_renderer.h
+    
+    # Input handling
+    src/input/input_handler.m
+    src/input/input_handler.h
+    src/input/wayland_seat.c
+    src/input/wayland_seat.h
+    src/input/cursor_shape_bridge.m
+    
+    # UI components
+    src/ui/WawonaUIHelpers.m
+    src/ui/WawonaUIHelpers.h
+    src/ui/WawonaPreferences.m
+    src/ui/WawonaPreferences.h
+    src/ui/WawonaPreferencesManager.m
+    src/ui/WawonaPreferencesManager.h
+    src/ui/WawonaAboutPanel.m
+    src/ui/WawonaAboutPanel.h
+    
+    # Stubs
+    src/stubs/egl_buffer_handler.h
 )
 
 # iOS-specific sources (launcher client - isolated to avoid wayland-client/wayland-server conflicts)
 if(IS_IOS)
     list(APPEND SOURCES
-        src/ios_launcher_client.m
-        src/ios_launcher_client.h
-        src/wayland_color_management.c
-        src/wayland_color_management.h
+        src/ui/ios_launcher_client.m
+        src/ui/ios_launcher_client.h
+        src/wayland/wayland_color_management.c
+        src/wayland/wayland_color_management.h
         src/protocols/color-management-v1-protocol.c
     )
     # Disable Vulkan bridge on iOS for now; headers installed for future enablement
@@ -311,16 +333,25 @@ if(IS_MACOS)
     check_include_files("vulkan/vulkan.h" VULKAN_HEADERS_FOUND)
     if(VULKAN_HEADERS_FOUND)
         list(APPEND SOURCES
-            src/vulkan_renderer.m
-            src/vulkan_renderer.h
-            src/vulkan_ios_wrapper.c
-            src/vulkan_entrypoint_stubs.c
-            src/wsi_entrypoint_forwards.c
-            src/vulkan_cmd_enqueue_stubs.c
-            src/vulkan_common_stubs.c
+            src/rendering/vulkan_renderer.m
+            src/rendering/vulkan_renderer.h
+            src/stubs/vulkan_ios_wrapper.c
+            src/stubs/vulkan_entrypoint_stubs.c
+            src/stubs/wsi_entrypoint_forwards.c
+            src/stubs/vulkan_cmd_enqueue_stubs.c
+            src/stubs/vulkan_common_stubs.c
         )
         add_definitions(-DHAVE_VULKAN=1)
         message(STATUS "Vulkan headers found - enabling Vulkan renderer on macOS")
+        
+        # Vulkan stub is linked via waypipe instead of KosmicKrisp
+
+        # Link Angle framework if available
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/macos-dependencies/Frameworks/Angle.framework")
+             target_link_libraries(Wawona "-framework Angle")
+             target_link_options(Wawona PRIVATE -F${CMAKE_CURRENT_SOURCE_DIR}/macos-dependencies/Frameworks)
+             message(STATUS "Linking Angle framework")
+        endif()
     else()
         add_definitions(-DHAVE_VULKAN=0)
         message(STATUS "Vulkan headers not found - building without Vulkan renderer on macOS")
@@ -330,11 +361,11 @@ endif()
 # Include EGL buffer handler only on non-Apple platforms
 if(NOT APPLE)
     list(APPEND SOURCES
-        src/egl_buffer_handler.c
+        src/stubs/egl_buffer_handler.c
     )
 else()
     list(APPEND SOURCES
-        src/egl_buffer_handler_stubs.c
+        src/stubs/egl_buffer_handler_stubs.c
     )
 endif()
 
@@ -342,7 +373,7 @@ endif()
 if(IS_IOS OR IS_MACOS)
     add_library(gbm STATIC
         src/compat/macos/stubs/libinput-macos/gbm-wrapper.c
-        src/metal_dmabuf.m
+        src/rendering/metal_dmabuf.m
     )
     
     target_include_directories(gbm PUBLIC
@@ -410,7 +441,7 @@ if(NOT METAL_COMPILER)
 endif()
 
 if(METAL_COMPILER)
-    set(METAL_SHADER_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/src/metal_shaders.metal)
+    set(METAL_SHADER_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/metal_shaders.metal)
     set(METAL_SHADER_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders.metallib)
     set(METAL_SHADER_AIR ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders.air)
     
@@ -475,6 +506,7 @@ if(IS_IOS OR IS_MACOS)
         MACOSX_BUNDLE_GUI_IDENTIFIER com.aspauldingcode.Wawona
         MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION_PATCH}
         MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
+        MACOSX_BUNDLE_ICON_FILE AppIcon
     )
     if(IS_IOS)
         message(STATUS "Configured iOS app bundle with Info.plist: ${CMAKE_CURRENT_BINARY_DIR}/Info.plist")
@@ -682,9 +714,7 @@ if(IS_IOS)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ios-dependencies/Frameworks")
         target_link_options(Wawona PRIVATE -F"${CMAKE_CURRENT_SOURCE_DIR}/ios-dependencies/Frameworks")
     endif()
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ios-dependencies/Frameworks/Kosmickrisp.framework")
-        target_link_libraries(Wawona "-framework Kosmickrisp")
-    endif()
+    # Vulkan stub is linked via waypipe instead of KosmicKrisp
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ios-dependencies/Frameworks/Angle.framework/Angle")
         target_link_libraries(Wawona "-framework Angle")
     endif()
@@ -714,41 +744,9 @@ if(IS_IOS)
         message(STATUS "Linking Vulkan library (force-load): ${VULKAN_LIB}")
     endif()
     
-    # Also try to link vulkan_kosmickrisp explicitly
-    find_library(VULKAN_KOSMICKRISP_LIB
-        NAMES vulkan_kosmickrisp
-        PATHS ${IOS_INSTALL_DIR}/lib
-        NO_DEFAULT_PATH
-    )
-    if(VULKAN_KOSMICKRISP_LIB AND NOT VULKAN_KOSMICKRISP_LIB STREQUAL VULKAN_LIB)
-        target_link_libraries(Wawona 
-            -Wl,-whole-archive 
-            ${VULKAN_KOSMICKRISP_LIB} 
-            -Wl,-no-whole-archive
-        )
-        message(STATUS "Linking KosmicKrisp Vulkan library (whole-archive): ${VULKAN_KOSMICKRISP_LIB}")
-    endif()
+    # Vulkan stub doesn't require kosmickrisp library
     
-    # KosmicKrisp requires expat and zstd
-    find_library(EXPAT_LIB
-        NAMES expat
-        PATHS ${IOS_INSTALL_DIR}/lib
-        NO_DEFAULT_PATH
-    )
-    if(EXPAT_LIB)
-        target_link_libraries(Wawona ${EXPAT_LIB})
-        message(STATUS "Linking expat library: ${EXPAT_LIB}")
-    endif()
-    
-    find_library(ZSTD_LIB
-        NAMES zstd
-        PATHS ${IOS_INSTALL_DIR}/lib
-        NO_DEFAULT_PATH
-    )
-    if(ZSTD_LIB)
-        target_link_libraries(Wawona ${ZSTD_LIB})
-        message(STATUS "Linking zstd library: ${ZSTD_LIB}")
-    endif()
+    # Vulkan stub doesn't need expat/zstd (those were KosmicKrisp dependencies)
     
     # KosmicKrisp also requires zlib for crc32
     # iOS SDK provides zlib, but we need to link it explicitly
@@ -813,11 +811,9 @@ else()
     )
     # Link static frameworks if present
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/macos-dependencies/Frameworks")
-        target_link_options(Wawona PRIVATE -F"${CMAKE_CURRENT_SOURCE_DIR}/macos-dependencies/Frameworks")
+        target_link_options(Wawona PRIVATE -F${CMAKE_CURRENT_SOURCE_DIR}/macos-dependencies/Frameworks)
     endif()
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/macos-dependencies/Frameworks/Kosmickrisp.framework")
-        target_link_libraries(Wawona "-framework Kosmickrisp")
-    endif()
+    # Vulkan stub is linked via waypipe instead of KosmicKrisp
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/macos-dependencies/Frameworks/Angle.framework/Angle")
         target_link_libraries(Wawona "-framework Angle")
     endif()
@@ -829,10 +825,10 @@ if(TARGET gbm)
     message(STATUS "Linking libgbm wrapper library")
 endif()
 
-# Link EGL if available (for KosmicKrisp+Zink EGL buffer support)
-# For iOS, EGL is disabled in KosmicKrisp, so skip linking
+# Link EGL if available (for EGL buffer support)
+# For iOS, EGL is not typically used
 if(IS_IOS)
-    message(STATUS "EGL disabled for iOS builds (KosmicKrisp builds Vulkan driver only)")
+    message(STATUS "EGL disabled for iOS builds (using Metal/IOSurface instead)")
 elseif(EGL_FOUND OR EGL_LIBRARIES)
     if(APPLE)
         message(STATUS "EGL detected but skip linking on Apple targets")
@@ -863,6 +859,19 @@ elseif(EGL_INCLUDE_DIRS)
     target_include_directories(Wawona PRIVATE ${EGL_INCLUDE_DIRS})
 endif()
 
+# Include directories for organized source subdirectories
+target_include_directories(Wawona PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/wayland
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/input
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/logging
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/stubs
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/protocols
+)
+
 # Copy Info.plist into app bundle
 # iOS requires explicit copy; macOS bundles are handled automatically by CMake when MACOSX_BUNDLE_INFO_PLIST is set
 if(IS_IOS)
@@ -881,6 +890,25 @@ if(IS_IOS)
             ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/Settings.bundle
             $<TARGET_FILE_DIR:Wawona>/Settings.bundle
         COMMENT "Copying Settings.bundle into iOS app bundle"
+    )
+
+    # Copy AppIcon.png into iOS app bundle
+    add_custom_command(TARGET Wawona POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/resources/Wawona@2x/Wawona-iOS-Default-1024x1024@2x.png"
+            "$<TARGET_FILE_DIR:Wawona>/AppIcon.png"
+        COMMENT "Copying AppIcon.png (iOS) into app bundle"
+    )
+endif()
+
+# Copy AppIcon.png into app bundle (macOS)
+if(NOT IS_IOS)
+    # Copy AppIcon.png into macOS app bundle Resources
+    add_custom_command(TARGET Wawona POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/resources/Wawona@2x/Wawona-iOS-Default-1024x1024@2x.png"
+            "$<TARGET_FILE_DIR:Wawona>/../Resources/AppIcon.png"
+        COMMENT "Copying AppIcon.png (macOS) into app bundle Resources"
     )
 endif()
 

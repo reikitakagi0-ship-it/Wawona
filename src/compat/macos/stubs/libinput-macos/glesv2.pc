@@ -1,4 +1,4 @@
-prefix=/Users/alex/Wawona/libinput-macos-stubs
+prefix=${pcfiledir}
 exec_prefix=${prefix}
 libdir=${prefix}
 includedir=${prefix}

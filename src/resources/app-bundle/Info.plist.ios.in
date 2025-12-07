@@ -45,6 +45,8 @@
     <false/>
     <key>UILaunchStoryboardName</key>
     <string>LaunchScreen</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon.png</string>
 </dict>
 </plist>
 

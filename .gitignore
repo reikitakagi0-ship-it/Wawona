@@ -28,6 +28,7 @@ wayland-*
 # Log files
 *.log
 logs/
+.nvimlog
 
 # Test client
 test_client
