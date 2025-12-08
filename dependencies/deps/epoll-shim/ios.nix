@@ -72,7 +72,7 @@ pkgs.stdenv.mkDerivation {
     cat > ios-toolchain.cmake <<EOF
 set(CMAKE_SYSTEM_NAME iOS)
 set(CMAKE_OSX_ARCHITECTURES arm64)
-set(CMAKE_OSX_DEPLOYMENT_TARGET 15.0)
+set(CMAKE_OSX_DEPLOYMENT_TARGET 26.0)
 set(CMAKE_C_COMPILER "$IOS_CC")
 set(CMAKE_CXX_COMPILER "$IOS_CXX")
 set(CMAKE_SYSROOT "$SDKROOT")
@@ -105,7 +105,7 @@ EOF
     # Add iOS-specific flags that depend on SDKROOT
     EXTRA_CMAKE_FLAGS=""
     if [ -n "''${SDKROOT:-}" ]; then
-      EXTRA_CMAKE_FLAGS="-DCMAKE_OSX_SYSROOT=$SDKROOT -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0"
+      EXTRA_CMAKE_FLAGS="-DCMAKE_OSX_SYSROOT=$SDKROOT -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0"
     fi
     cmake -B build -S . \
       -DCMAKE_TOOLCHAIN_FILE=ios-toolchain.cmake \
@@ -232,7 +232,7 @@ TESTCODE
         
         "$IOS_CC" -isysroot "$SDKROOT" \
            -arch arm64 \
-           -mios-version-min=15.0 \
+           -mios-version-min=26.0 \
            $PKG_CFLAGS \
            $PKG_LIBS \
            test_link.c \

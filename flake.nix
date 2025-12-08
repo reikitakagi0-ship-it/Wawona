@@ -92,10 +92,22 @@
           "waypipe-ios" = buildModule.buildForIOS "waypipe" {};
           "waypipe-macos" = buildModule.buildForMacOS "waypipe" {};
           "waypipe-android" = buildModule.buildForAndroid "waypipe" {};
-          "mesa-kosmickrisp-ios" = buildModule.buildForIOS "mesa-kosmickrisp" {};
-          "mesa-kosmickrisp-macos" = buildModule.buildForMacOS "mesa-kosmickrisp" {};
+          "swiftshader-android" = buildModule.buildForAndroid "swiftshader" {};
+          "kosmickrisp-ios" = buildModule.buildForIOS "kosmickrisp" {};
+          "kosmickrisp-macos" = buildModule.buildForMacOS "kosmickrisp" {};
           "epoll-shim-ios" = buildModule.buildForIOS "epoll-shim" {};
           "epoll-shim-macos" = buildModule.buildForMacOS "epoll-shim" {};
+          "zstd-ios" = buildModule.buildForIOS "zstd" {};
+          "zstd-macos" = buildModule.buildForMacOS "zstd" {};
+          "zstd-android" = buildModule.buildForAndroid "zstd" {};
+          "lz4-ios" = buildModule.buildForIOS "lz4" {};
+          "lz4-macos" = buildModule.buildForMacOS "lz4" {};
+          "lz4-android" = buildModule.buildForAndroid "lz4" {};
+          "ffmpeg-ios" = buildModule.buildForIOS "ffmpeg" {};
+          "ffmpeg-macos" = buildModule.buildForMacOS "ffmpeg" {};
+          "ffmpeg-android" = buildModule.buildForAndroid "ffmpeg" {};
+          "test-ios-toolchain" = pkgs.callPackage ./dependencies/utils/test-ios-toolchain.nix {};
+          "test-ios-toolchain-cross" = pkgs.callPackage ./dependencies/utils/test-ios-toolchain-cross.nix {};
         };
       in
         iosPkgs // macosPkgs // androidPkgs // directPkgs;
@@ -216,7 +228,7 @@
       wawona-android = wawonaBuildModule.android;
       
       # Add dependency packages
-      # Format: <dependency-name>-<platform> (e.g., wayland-ios, mesa-kosmickrisp-macos)
+      # Format: <dependency-name>-<platform> (e.g., wayland-ios, kosmickrisp-macos)
     } // dependencyPackages);
     
     apps = forAllSystems (system: {

@@ -16,7 +16,15 @@ in
 pkgs.stdenv.mkDerivation {
   name = "expat-macos";
   inherit src patches;
-  nativeBuildInputs = with pkgs; [ cmake pkg-config ];
+  nativeBuildInputs = with pkgs; [ cmake pkg-config apple-sdk_26 ];
   buildInputs = [];
-  cmakeFlags = buildFlags;
+  preConfigure = ''
+    MACOS_SDK="${pkgs.apple-sdk_26}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+    export SDKROOT="$MACOS_SDK"
+    export MACOSX_DEPLOYMENT_TARGET="26.0"
+  '';
+  cmakeFlags = buildFlags ++ [
+    "-DCMAKE_OSX_SYSROOT=${pkgs.apple-sdk_26}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+    "-DCMAKE_OSX_DEPLOYMENT_TARGET=26.0"
+  ];
 }

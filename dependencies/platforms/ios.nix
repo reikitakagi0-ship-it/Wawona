@@ -8,8 +8,8 @@ in
 
 {
   buildForIOS = name: entry:
-    if name == "wayland" then
-      (import ../deps/wayland/ios.nix) { inherit lib pkgs buildPackages common buildModule; }
+    if name == "libwayland" then
+      (import ../deps/libwayland/ios.nix) { inherit lib pkgs buildPackages common buildModule; }
     else if name == "expat" then
       (import ../deps/expat/ios.nix) { inherit lib pkgs buildPackages common buildModule; }
     else if name == "libffi" then
@@ -18,8 +18,22 @@ in
       (import ../deps/libxml2/ios.nix) { inherit lib pkgs buildPackages common buildModule; }
     else if name == "waypipe" then
       (import ../deps/waypipe/ios.nix) { inherit lib pkgs buildPackages common buildModule; }
-    else if name == "mesa-kosmickrisp" then
-      (import ../deps/mesa-kosmickrisp/ios.nix) { inherit lib pkgs buildPackages common buildModule; }
+    else if name == "kosmickrisp" then
+      (import ../deps/kosmickrisp/ios.nix) { inherit lib pkgs buildPackages common buildModule; }
+    else if name == "zlib" then
+      (import ../deps/zlib/ios.nix) { inherit lib pkgs buildPackages common buildModule; }
+    else if name == "zstd" then
+      (import ../deps/zstd/ios.nix) { inherit lib pkgs buildPackages common buildModule; }
+    else if name == "lz4" then
+      (import ../deps/lz4/ios.nix) { inherit lib pkgs buildPackages common buildModule; }
+    else if name == "ffmpeg" then
+      (import ../deps/ffmpeg/ios.nix) { inherit lib pkgs buildPackages common buildModule; }
+    else if name == "spirv-llvm-translator" then
+      (import ../deps/spirv-llvm-translator/ios.nix) { inherit lib pkgs buildPackages common buildModule; }
+    else if name == "spirv-tools" then
+      (import ../deps/spirv-tools/ios.nix) { inherit lib pkgs buildPackages common buildModule; }
+    else if name == "libclc" then
+      (import ../deps/libclc/ios.nix) { inherit lib pkgs buildPackages common buildModule; }
     else
       let
         src = if entry.source == "system" then null else fetchSource entry;

@@ -7,8 +7,8 @@ in
 
 {
   buildForMacOS = name: entry:
-    if name == "wayland" then
-      (import ../deps/wayland/macos.nix) { inherit lib pkgs common buildModule; }
+    if name == "libwayland" then
+      (import ../deps/libwayland/macos.nix) { inherit lib pkgs common buildModule; }
     else if name == "expat" then
       (import ../deps/expat/macos.nix) { inherit lib pkgs common; }
     else if name == "libffi" then
@@ -17,8 +17,14 @@ in
       (import ../deps/libxml2/macos.nix) { inherit lib pkgs common; }
     else if name == "waypipe" then
       (import ../deps/waypipe/macos.nix) { inherit lib pkgs common buildModule; }
-    else if name == "mesa-kosmickrisp" then
-      (import ../deps/mesa-kosmickrisp/macos.nix) { inherit lib pkgs common buildModule; }
+    else if name == "kosmickrisp" then
+      (import ../deps/kosmickrisp/macos.nix) { inherit lib pkgs common buildModule; }
+    else if name == "zstd" then
+      (import ../deps/zstd/macos.nix) { inherit lib pkgs common buildModule; }
+    else if name == "lz4" then
+      (import ../deps/lz4/macos.nix) { inherit lib pkgs common buildModule; }
+    else if name == "ffmpeg" then
+      (import ../deps/ffmpeg/macos.nix) { inherit lib pkgs common buildModule; }
     else
       let
         src = fetchSource entry;

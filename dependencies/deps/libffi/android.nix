@@ -49,7 +49,7 @@ pkgs.stdenv.mkDerivation {
     if [ -d "$out/lib" ]; then
       echo "Library files installed to $out/lib:"
       ls -la "$out/lib/" || true
-    fi
+      fi
     # Also check .libs directory as fallback
     if [ -d .libs ] && [ ! -f "$out/lib/libffi.a" ]; then
       mkdir -p $out/lib

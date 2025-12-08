@@ -30,8 +30,8 @@ let
         (import ./deps/libxml2/ios.nix) { inherit lib pkgs buildPackages common; buildModule = iosModuleSelf; }
       else if name == "waypipe" then
         (import ./deps/waypipe/ios.nix) { inherit lib pkgs buildPackages common; buildModule = iosModuleSelf; }
-      else if name == "mesa-kosmickrisp" then
-        (import ./deps/mesa-kosmickrisp/ios.nix) { inherit lib pkgs buildPackages common; buildModule = iosModuleSelf; }
+      else if name == "kosmickrisp" then
+        (import ./deps/kosmickrisp/ios.nix) { inherit lib pkgs buildPackages common; buildModule = iosModuleSelf; }
       else if name == "epoll-shim" then
         (import ./deps/epoll-shim/ios.nix) { inherit lib pkgs buildPackages common; buildModule = iosModuleSelf; }
       else
@@ -52,8 +52,8 @@ let
         (import ./deps/epoll-shim/macos.nix) { inherit lib pkgs common; buildModule = macosModuleSelf; }
       else if name == "waypipe" then
         (import ./deps/waypipe/macos.nix) { inherit lib pkgs common; buildModule = macosModuleSelf; }
-      else if name == "mesa-kosmickrisp" then
-        (import ./deps/mesa-kosmickrisp/macos.nix) { inherit lib pkgs common; buildModule = macosModuleSelf; }
+      else if name == "kosmickrisp" then
+        (import ./deps/kosmickrisp/macos.nix) { inherit lib pkgs common; buildModule = macosModuleSelf; }
       else
         (import ./platforms/macos.nix { inherit lib pkgs common; buildModule = macosModuleSelf; }).buildForMacOS name entry;
   };
@@ -71,22 +71,37 @@ let
         libffi = iosModule.buildForIOS "libffi" {};
         libxml2 = iosModule.buildForIOS "libxml2" {};
         waypipe = iosModule.buildForIOS "waypipe" {};
-        "mesa-kosmickrisp" = iosModule.buildForIOS "mesa-kosmickrisp" {};
+        "kosmickrisp" = iosModule.buildForIOS "kosmickrisp" {};
         "epoll-shim" = iosModule.buildForIOS "epoll-shim" {};
+        zlib = iosModule.buildForIOS "zlib" {};
+        zstd = iosModule.buildForIOS "zstd" {};
+        lz4 = iosModule.buildForIOS "lz4" {};
+        ffmpeg = iosModule.buildForIOS "ffmpeg" {};
+        "spirv-llvm-translator" = iosModule.buildForIOS "spirv-llvm-translator" {};
+        "spirv-tools" = iosModule.buildForIOS "spirv-tools" {};
+        libclc = iosModule.buildForIOS "libclc" {};
+        test-toolchain = pkgs.callPackage ./utils/test-ios-toolchain.nix {};
+        test-toolchain-cross = pkgs.callPackage ./utils/test-ios-toolchain-cross.nix {};
       } else if platform == "macos" then {
         libwayland = macosModule.buildForMacOS "libwayland" {};
         expat = macosModule.buildForMacOS "expat" {};
         libffi = macosModule.buildForMacOS "libffi" {};
         libxml2 = macosModule.buildForMacOS "libxml2" {};
         waypipe = macosModule.buildForMacOS "waypipe" {};
-        "mesa-kosmickrisp" = macosModule.buildForMacOS "mesa-kosmickrisp" {};
+        "kosmickrisp" = macosModule.buildForMacOS "kosmickrisp" {};
         "epoll-shim" = macosModule.buildForMacOS "epoll-shim" {};
+        zstd = macosModule.buildForMacOS "zstd" {};
+        lz4 = macosModule.buildForMacOS "lz4" {};
       } else if platform == "android" then {
         libwayland = androidModule.buildForAndroid "libwayland" {};
         expat = androidModule.buildForAndroid "expat" {};
         libffi = androidModule.buildForAndroid "libffi" {};
         libxml2 = androidModule.buildForAndroid "libxml2" {};
         waypipe = androidModule.buildForAndroid "waypipe" {};
+        swiftshader = androidModule.buildForAndroid "swiftshader" {};
+        zstd = androidModule.buildForAndroid "zstd" {};
+        lz4 = androidModule.buildForAndroid "lz4" {};
+        ffmpeg = androidModule.buildForAndroid "ffmpeg" {};
       } else {};
     in
       lib.mapAttrs (name: entry:

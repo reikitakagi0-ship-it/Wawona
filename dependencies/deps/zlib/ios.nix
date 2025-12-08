@@ -1,23 +1,18 @@
 { lib, pkgs, buildPackages, common, buildModule }:
 
 let
-  fetchSource = common.fetchSource;
   xcodeUtils = import ../../../utils/xcode-wrapper.nix { inherit lib pkgs; };
-  libffiSource = {
-    source = "github";
-    owner = "libffi";
-    repo = "libffi";
-    tag = "v3.5.2";
-    sha256 = "sha256-tvNdhpUnOvWoC5bpezUJv+EScnowhURI7XEtYF/EnQw=";
+  # zlib source - fetch from zlib.net (same as nixpkgs)
+  src = pkgs.fetchurl {
+    url = "https://zlib.net/zlib-1.3.1.tar.gz";
+    sha256 = "sha256-08yzf8xz0q7vxs8mnn74xmpxsrs6wy0aan55lpmpriysvyvv54ws";
   };
-  src = fetchSource libffiSource;
-  buildFlags = [ "--disable-docs" "--disable-shared" "--enable-static" ];
-  patches = [];
 in
 pkgs.stdenv.mkDerivation {
-  name = "libffi-ios";
-  inherit src patches;
-  nativeBuildInputs = with buildPackages; [ autoconf automake libtool pkg-config texinfo ];
+  name = "zlib-ios";
+  inherit src;
+  patches = [];
+  nativeBuildInputs = with buildPackages; [ ];
   buildInputs = [];
   preConfigure = ''
     if [ -z "''${XCODE_APP:-}" ]; then
@@ -29,9 +24,6 @@ pkgs.stdenv.mkDerivation {
         export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
       fi
     fi
-    if [ ! -f ./configure ]; then
-      autoreconf -fi || autogen.sh || true
-    fi
     export NIX_CFLAGS_COMPILE=""
     export NIX_CXXFLAGS_COMPILE=""
     if [ -n "''${SDKROOT:-}" ] && [ -d "$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin" ]; then
@@ -41,16 +33,26 @@ pkgs.stdenv.mkDerivation {
       IOS_CC="${buildPackages.clang}/bin/clang"
       IOS_CXX="${buildPackages.clang}/bin/clang++"
     fi
+  '';
+  configurePhase = ''
+    runHook preConfigure
+    # zlib uses configure script
     export CC="$IOS_CC"
     export CXX="$IOS_CXX"
     export CFLAGS="-arch arm64 -isysroot $SDKROOT -miphoneos-version-min=26.0 -fPIC"
     export CXXFLAGS="-arch arm64 -isysroot $SDKROOT -miphoneos-version-min=26.0 -fPIC"
     export LDFLAGS="-arch arm64 -isysroot $SDKROOT -miphoneos-version-min=26.0"
-  '';
-  configurePhase = ''
-    runHook preConfigure
-    ./configure --prefix=$out --host=aarch64-apple-darwin ${lib.concatMapStringsSep " " (flag: flag) buildFlags}
+    ./configure --prefix=$out --static
     runHook postConfigure
   '';
-  configureFlags = buildFlags;
+  buildPhase = ''
+    runHook preBuild
+    make
+    runHook postBuild
+  '';
+  installPhase = ''
+    runHook preInstall
+    make install
+    runHook postInstall
+  '';
 }

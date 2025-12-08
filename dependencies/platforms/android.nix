@@ -8,15 +8,23 @@ in
 {
   buildForAndroid = name: entry:
     if name == "libwayland" then
-      (import ../deps/libwayland/android.nix) { inherit lib pkgs buildPackages common; buildModule = { inherit buildForAndroid; }; }
+      (import ../deps/libwayland/android.nix) { inherit lib pkgs buildPackages common; buildModule = buildModule; }
     else if name == "expat" then
-      (import ../deps/expat/android.nix) { inherit lib pkgs buildPackages common; buildModule = { inherit buildForAndroid; }; }
+      (import ../deps/expat/android.nix) { inherit lib pkgs buildPackages common; buildModule = buildModule; }
     else if name == "libffi" then
-      (import ../deps/libffi/android.nix) { inherit lib pkgs buildPackages common; buildModule = { inherit buildForAndroid; }; }
+      (import ../deps/libffi/android.nix) { inherit lib pkgs buildPackages common; buildModule = buildModule; }
     else if name == "libxml2" then
-      (import ../deps/libxml2/android.nix) { inherit lib pkgs buildPackages common; buildModule = { inherit buildForAndroid; }; }
+      (import ../deps/libxml2/android.nix) { inherit lib pkgs buildPackages common; buildModule = buildModule; }
     else if name == "waypipe" then
-      (import ../deps/waypipe/android.nix) { inherit lib pkgs buildPackages common; buildModule = { inherit buildForAndroid; }; }
+      (import ../deps/waypipe/android.nix) { inherit lib pkgs buildPackages common; buildModule = buildModule; }
+    else if name == "swiftshader" then
+      (import ../deps/swiftshader/android.nix) { inherit lib pkgs buildPackages common; buildModule = buildModule; }
+    else if name == "zstd" then
+      (import ../deps/zstd/android.nix) { inherit lib pkgs buildPackages common; buildModule = buildModule; }
+    else if name == "lz4" then
+      (import ../deps/lz4/android.nix) { inherit lib pkgs buildPackages common; buildModule = buildModule; }
+    else if name == "ffmpeg" then
+      (import ../deps/ffmpeg/android.nix) { inherit lib pkgs buildPackages common; buildModule = buildModule; }
     else
       let
         androidToolchain = import ../common/android-toolchain.nix { inherit lib pkgs; };

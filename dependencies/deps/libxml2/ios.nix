@@ -43,9 +43,9 @@ pkgs.stdenv.mkDerivation {
     fi
     export CC="$IOS_CC"
     export CXX="$IOS_CXX"
-    export CFLAGS="-arch arm64 -isysroot $SDKROOT -miphoneos-version-min=15.0 -fPIC"
-    export CXXFLAGS="-arch arm64 -isysroot $SDKROOT -miphoneos-version-min=15.0 -fPIC"
-    export LDFLAGS="-arch arm64 -isysroot $SDKROOT -miphoneos-version-min=15.0"
+    export CFLAGS="-arch arm64 -isysroot $SDKROOT -miphoneos-version-min=26.0 -fPIC"
+    export CXXFLAGS="-arch arm64 -isysroot $SDKROOT -miphoneos-version-min=26.0 -fPIC"
+    export LDFLAGS="-arch arm64 -isysroot $SDKROOT -miphoneos-version-min=26.0"
   '';
   configurePhase = ''
     runHook preConfigure

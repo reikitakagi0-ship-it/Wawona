@@ -1,22 +1,19 @@
 { lib, pkgs, buildPackages, common, buildModule }:
 
 let
-  fetchSource = common.fetchSource;
   xcodeUtils = import ../../../utils/xcode-wrapper.nix { inherit lib pkgs; };
-  expatSource = {
-    source = "github";
-    owner = "libexpat";
-    repo = "libexpat";
-    tag = "R_2_7_3";
-    sha256 = "sha256-dDxnAJsj515vr9+j2Uqa9E+bB+teIBfsnrexppBtdXg=";
+  # zstd source - fetch from GitHub
+  src = pkgs.fetchFromGitHub {
+    owner = "facebook";
+    repo = "zstd";
+    rev = "v1.5.7";
+    sha256 = "sha256-tNFWIT9ydfozB8dWcmTMuZLCQmQudTFJIkSr0aG7S44=";
   };
-  src = fetchSource expatSource;
-  buildFlags = [];
-  patches = [];
 in
 pkgs.stdenv.mkDerivation {
-  name = "expat-ios";
-  inherit src patches;
+  name = "zstd-ios";
+  inherit src;
+  patches = [];
   nativeBuildInputs = with buildPackages; [ cmake pkg-config ];
   buildInputs = [];
   preConfigure = ''
@@ -28,9 +25,6 @@ pkgs.stdenv.mkDerivation {
         export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
         export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
       fi
-    fi
-    if [ -d expat ]; then
-      cd expat
     fi
     export NIX_CFLAGS_COMPILE=""
     export NIX_CXXFLAGS_COMPILE=""
@@ -48,9 +42,17 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET 26.0)
 set(CMAKE_C_COMPILER "$IOS_CC")
 set(CMAKE_CXX_COMPILER "$IOS_CXX")
 set(CMAKE_SYSROOT "$SDKROOT")
+set(BUILD_SHARED_LIBS OFF)
 EOF
   '';
+  
+  # zstd has CMakeLists.txt in build/cmake subdirectory
+  sourceRoot = "source/build/cmake";
+  
   cmakeFlags = [
     "-DCMAKE_TOOLCHAIN_FILE=ios-toolchain.cmake"
-  ] ++ buildFlags;
+    "-DZSTD_BUILD_PROGRAMS=OFF"
+    "-DZSTD_BUILD_SHARED=OFF"
+    "-DZSTD_BUILD_STATIC=ON"
+  ];
 }

@@ -33,6 +33,7 @@ pkgs.stdenv.mkDerivation {
     meson ninja pkg-config
     (python3.withPackages (ps: with ps; [ setuptools pip packaging mako pyyaml ]))
     bison flex
+    apple-sdk_26
   ];
   buildInputs = depInputs ++ [ epollShim ];
   postPatch = ''
@@ -70,10 +71,14 @@ pkgs.stdenv.mkDerivation {
   '';
   configurePhase = ''
     runHook preConfigure
+    # Use macOS SDK 26+
+    MACOS_SDK="${pkgs.apple-sdk_26}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+    export SDKROOT="$MACOS_SDK"
+    export MACOSX_DEPLOYMENT_TARGET="26.0"
     # Add epoll-shim include paths for macOS
     # epoll-shim is required for Wayland on macOS (implements epoll on top of kqueue)
-    export CFLAGS="-I${epollShim}/include ''${NIX_CFLAGS_COMPILE:-}"
-    export LDFLAGS="-L${epollShim}/lib -lepoll-shim ''${NIX_LDFLAGS:-}"
+    export CFLAGS="-isysroot $MACOS_SDK -mmacosx-version-min=26.0 -I${epollShim}/include ''${NIX_CFLAGS_COMPILE:-}"
+    export LDFLAGS="-isysroot $MACOS_SDK -mmacosx-version-min=26.0 -L${epollShim}/lib -lepoll-shim ''${NIX_LDFLAGS:-}"
     export PKG_CONFIG_PATH="${epollShim}/lib/pkgconfig:''${PKG_CONFIG_PATH:-}"
     echo "Configured epoll-shim paths: CFLAGS includes ${epollShim}/include"
     meson setup build \

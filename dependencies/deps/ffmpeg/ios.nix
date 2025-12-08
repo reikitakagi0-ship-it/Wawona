@@ -1,0 +1,161 @@
+{ lib, pkgs, buildPackages, common, buildModule }:
+
+let
+  fetchSource = common.fetchSource;
+  xcodeUtils = import ../../utils/xcode-wrapper.nix { inherit lib pkgs; };
+  ffmpegSource = {
+    source = "github";
+    owner = "FFmpeg";
+    repo = "FFmpeg";
+    tag = "n7.1";
+    sha256 = "sha256-erTkv156VskhYEJWjpWFvHjmcr2hr6qgUi28Ho8NFYk=";
+  };
+  src = fetchSource ffmpegSource;
+in
+pkgs.stdenv.mkDerivation {
+  name = "ffmpeg-ios";
+  inherit src;
+  
+  # We need to access /Applications/Xcode.app for the SDK and toolchain
+  __noChroot = true; 
+
+  nativeBuildInputs = with buildPackages; [
+    pkg-config
+    nasm
+    yasm
+  ];
+  
+  buildInputs = [];
+  
+  # Configure phase to set up the environment
+  preConfigure = ''
+    # Find Xcode path dynamically
+    if [ -d "/Applications/Xcode.app" ]; then
+      export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+    elif [ -d "/Applications/Xcode-beta.app" ]; then
+      export DEVELOPER_DIR="/Applications/Xcode-beta.app/Contents/Developer"
+    else
+      # Fallback to xcode-select
+      export DEVELOPER_DIR=$(/usr/bin/xcode-select -p)
+    fi
+    
+    echo "Using Developer Dir: $DEVELOPER_DIR"
+    
+    export IOS_SDK_PATH="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+    export MACOS_SDK_PATH="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+    
+    if [ ! -d "$IOS_SDK_PATH" ]; then
+      echo "Error: iOS SDK not found at $IOS_SDK_PATH"
+      exit 1
+    fi
+    
+    echo "Using iOS SDK: $IOS_SDK_PATH"
+    
+    # Use the toolchain from Xcode
+    export TOOLCHAIN_BIN="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+    export CC="$TOOLCHAIN_BIN/clang"
+    export CXX="$TOOLCHAIN_BIN/clang++"
+    export AR="$TOOLCHAIN_BIN/ar"
+    export RANLIB="$TOOLCHAIN_BIN/ranlib"
+    export STRIP="$TOOLCHAIN_BIN/strip"
+    export NM="$TOOLCHAIN_BIN/nm"
+    
+    # HOST compiler (runs on macOS)
+    export HOST_CC="/usr/bin/clang"
+    
+    # Flags for TARGET (iOS)
+    export CFLAGS="-arch arm64 -isysroot $IOS_SDK_PATH -miphoneos-version-min=15.0 -fembed-bitcode"
+    export CXXFLAGS="$CFLAGS"
+    export LDFLAGS="-arch arm64 -isysroot $IOS_SDK_PATH -miphoneos-version-min=15.0"
+  '';
+  
+  configurePhase = ''
+    runHook preConfigure
+    
+    # Explicitly disable programs and runtime checks
+    # Note: We set --host-cc to the macOS compiler to allow building helper tools
+    ./configure \
+      --prefix=$out \
+      --enable-cross-compile \
+      --target-os=darwin \
+      --arch=arm64 \
+      --cc="$CC" \
+      --cxx="$CXX" \
+      --host-cc="$HOST_CC" \
+      --ar="$AR" \
+      --ranlib="$RANLIB" \
+      --strip="$STRIP" \
+      --nm="$NM" \
+      --sysroot="$IOS_SDK_PATH" \
+      --extra-cflags="$CFLAGS" \
+      --extra-ldflags="$LDFLAGS" \
+      --disable-runtime-cpudetect \
+      --disable-programs \
+      --disable-doc \
+      --disable-debug \
+      --enable-shared \
+      --disable-static \
+      --disable-avdevice \
+      --disable-indevs \
+      --disable-outdevs \
+      --disable-indev=audiotoolbox \
+      --disable-outdev=audiotoolbox \
+      --enable-videotoolbox \
+      --enable-hwaccel=h264_videotoolbox \
+      --enable-hwaccel=hevc_videotoolbox \
+      --enable-encoder=h264_videotoolbox \
+      --enable-encoder=hevc_videotoolbox \
+      --enable-decoder=h264 \
+      --enable-decoder=hevc
+      
+    runHook postConfigure
+  '';
+  
+  buildPhase = ''
+    runHook preBuild
+    make -j$NIX_BUILD_CORES
+    runHook postBuild
+  '';
+  
+  installPhase = ''
+    runHook preInstall
+    make install
+    runHook postInstall
+  '';
+  
+  postInstall = ''
+    # Generate minimal pkg-config files if missing
+    mkdir -p $out/lib/pkgconfig
+    if [ ! -f "$out/lib/pkgconfig/libavcodec.pc" ]; then
+      cat > "$out/lib/pkgconfig/libavcodec.pc" <<EOF
+prefix=$out
+exec_prefix=\''${prefix}
+libdir=\''${exec_prefix}/lib
+includedir=\''${prefix}/include
+
+Name: libavcodec
+Description: FFmpeg codec library
+Version: 7.1
+Requires: 
+Libs: -L\''${libdir} -lavcodec
+Cflags: -I\''${includedir}
+EOF
+    fi
+    # Generate libavutil.pc as well since waypipe needs it
+    if [ ! -f "$out/lib/pkgconfig/libavutil.pc" ]; then
+      cat > "$out/lib/pkgconfig/libavutil.pc" <<EOF
+prefix=$out
+exec_prefix=\''${prefix}
+libdir=\''${exec_prefix}/lib
+includedir=\''${prefix}/include
+
+Name: libavutil
+Description: FFmpeg utility library
+Version: 7.1
+Requires: 
+Libs: -L\''${libdir} -lavutil
+Cflags: -I\''${includedir}
+EOF
+    fi
+  '';
+}

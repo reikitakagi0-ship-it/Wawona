@@ -70,3 +70,8 @@ android-dependencies/
 
 # IDE files
 .cursor/
+
+# Nix build artifacts
+result
+result-*
+/nix/
