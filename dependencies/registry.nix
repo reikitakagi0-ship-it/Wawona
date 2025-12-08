@@ -40,7 +40,8 @@
     owner = "wayland";
     repo = "wayland";
     # Use latest stable release tag (update as needed)
-    tag = "1.23.0";  # Update to actual tag/rev
+    tag = "1.23.0";
+    sha256 = "sha256-oK0Z8xO2ILuySGZS0m37ZF0MOyle2l8AXb0/6wai0/w=";
     platforms = [ "ios" "macos" "android" ];
     buildSystem = "meson";
     buildFlags = {
@@ -60,19 +61,11 @@
         "-Dtests=false"
       ];
     };
+    # Patches will be added when needed - for now build without patches
     patches = {
-      ios = [
-        # Remove Linux-specific syscalls (signalfd, timerfd) for iOS
-        ./patches/wayland/ios-remove-linux-syscalls.patch
-      ];
-      macos = [
-        # Use epoll-shim for macOS compatibility
-        ./patches/wayland/macos-epoll-shim.patch
-      ];
-      android = [
-        # Remove signalfd/timerfd for Android (Bionic libc)
-        ./patches/wayland/android-remove-linux-syscalls.patch
-      ];
+      ios = [];
+      macos = [];
+      android = [];
     };
   };
 

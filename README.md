@@ -7,3 +7,17 @@
   <img src="gallery/preview2.png" alt="Wawona - Wayland Compositor Preview 2" width="800"/>
   <img src="gallery/preview3.png" alt="Wawona - Wayland Compositor Preview 3" width="800"/>
 </div>
+
+
+Q: How to build?
+
+A:
+1. Install Nix.
+2. use apple silicon mac.
+3. Compile with nix flake.
+
+
+Q: "I don't have nix"
+
+A:
+`¯\_(ツ)_/¯`

@@ -7,7 +7,12 @@
     forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system);
   in {
     packages = forAllSystems (system: let
-      pkgs = import nixpkgs { inherit system; };
+      pkgs = import nixpkgs { 
+        inherit system;
+        config = {
+          allowUnfree = true;  # Allow Android NDK
+        };
+      };
       
       # Import dependencies module
       depsModule = import ./dependencies/default.nix {
@@ -21,6 +26,34 @@
         inherit pkgs;
         stdenv = pkgs.stdenv;
         buildPackages = pkgs.buildPackages;
+      };
+      
+      # Import Wawona build module
+      # Filter source to exclude build artifacts and other files
+      wawonaSrc = pkgs.lib.cleanSourceWith {
+        src = ./.;
+        filter = path: type:
+          let
+            baseName = baseNameOf path;
+            relPath = pkgs.lib.removePrefix (toString ./. + "/") (toString path);
+          in
+            !(
+              baseName == ".git" ||
+              baseName == "build" ||
+              baseName == "result" ||
+              baseName == ".direnv" ||
+              pkgs.lib.hasPrefix "result" baseName ||
+              pkgs.lib.hasPrefix ".git" baseName
+            );
+      };
+      
+      wawonaBuildModule = import ./dependencies/wawona-build.nix {
+        lib = pkgs.lib;
+        inherit pkgs;
+        stdenv = pkgs.stdenv;
+        buildPackages = pkgs.buildPackages;
+        inherit depsModule buildModule;
+        inherit wawonaSrc;
       };
       
       # Get registry for building individual dependencies
@@ -47,16 +80,33 @@
       in
         iosPkgs // macosPkgs // androidPkgs;
       
-      # Wrapper script to run make target and show dialog on exit
+      # Wrapper script to run Nix build and show dialog on exit
       wawonaWrapper = pkgs.writeShellScriptBin "wawona-wrapper" ''
         TARGET=$1
         LOGFILE="build/$TARGET.log"
         mkdir -p build
         
-        # Run make and capture output (tee to log and stdout)
-        # We use a subshell to capture exit code of make, not tee
+        # Map target names to Nix package names
+        case "$TARGET" in
+          ios-compositor)
+            NIX_PKG="wawona-ios"
+            ;;
+          macos-compositor)
+            NIX_PKG="wawona-macos"
+            ;;
+          android-compositor)
+            NIX_PKG="wawona-android"
+            ;;
+          *)
+            echo "Unknown target: $TARGET"
+            exit 1
+            ;;
+        esac
+        
+        # Run nix build and capture output (tee to log and stdout)
+        # We use a subshell to capture exit code of nix build, not tee
         set +e
-        ( make "$TARGET" 2>&1; echo $? > build/"$TARGET".exitcode ) | tee "$LOGFILE"
+        ( nix build .#"$NIX_PKG" 2>&1; echo $? > build/"$TARGET".exitcode ) | tee "$LOGFILE"
         EXIT_CODE=$(cat build/"$TARGET".exitcode)
         rm build/"$TARGET".exitcode
         set -e
@@ -140,6 +190,11 @@
         '';
       };
       
+      # Add Wawona build packages
+      wawona-ios = wawonaBuildModule.ios;
+      wawona-macos = wawonaBuildModule.macos;
+      wawona-android = wawonaBuildModule.android;
+      
       # Add dependency packages
       # Format: <dependency-name>-<platform> (e.g., wayland-ios, mesa-kosmickrisp-macos)
     } // dependencyPackages);
@@ -178,7 +233,14 @@
         ];
         shellHook = ''
             echo "🔨 Wawona Development Environment"
-            echo "Run 'nix run' to start the multiplexed build."
+            echo "Run 'nix run' to build Wawona for all platforms (iOS, macOS, Android)"
+            echo ""
+            echo "Available builds:"
+            echo "  - nix build .#wawona-ios      (iOS)"
+            echo "  - nix build .#wawona-macos   (macOS)"
+            echo "  - nix build .#wawona-android (Android)"
+            echo ""
+            echo "Dependencies are automatically built as needed."
         '';
       };
     });

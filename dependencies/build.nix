@@ -10,7 +10,7 @@ let
   registry = import ./registry.nix;
   
   # iOS cross-compilation setup
-  iosPkgs = pkgs.pkgsCross.iphone64-darwin;
+  iosPkgs = pkgs.pkgsCross.iphone64;
   
   # Android cross-compilation setup (aarch64-android-prebuilt)
   androidPkgs = pkgs.pkgsCross.aarch64-android-prebuilt;
@@ -26,22 +26,48 @@ let
   fetchSource = entry:
     let
       source = getSource entry;
-      rev = entry.rev or (entry.tag or "HEAD");
-      sha256 = entry.sha256 or lib.fakeSha256;
+      sha256 = entry.sha256 or lib.fakeHash;
     in
     if source == "gitlab" then
-      pkgs.fetchFromGitLab {
-        domain = "gitlab.freedesktop.org";
-        owner = entry.owner;
-        repo = entry.repo;
-        inherit rev sha256;
-      }
+      (
+        if lib.hasAttr "tag" entry then
+          # For tags, use fetchgit which handles them better
+          pkgs.fetchgit {
+            url = "https://gitlab.freedesktop.org/${entry.owner}/${entry.repo}.git";
+            rev = "refs/tags/${entry.tag}";
+            sha256 = sha256;
+          }
+        else if lib.hasAttr "rev" entry then
+          pkgs.fetchFromGitLab {
+            domain = "gitlab.freedesktop.org";
+            owner = entry.owner;
+            repo = entry.repo;
+            rev = entry.rev;
+            sha256 = sha256;
+          }
+        else
+          throw "GitLab source requires either 'rev' or 'tag'"
+      )
     else
-      pkgs.fetchFromGitHub {
-        owner = entry.owner;
-        repo = entry.repo;
-        inherit rev sha256;
-      };
+      (
+        # GitHub
+        if lib.hasAttr "tag" entry then
+          pkgs.fetchFromGitHub {
+            owner = entry.owner;
+            repo = entry.repo;
+            rev = entry.tag;
+            sha256 = sha256;
+          }
+        else if lib.hasAttr "rev" entry then
+          pkgs.fetchFromGitHub {
+            owner = entry.owner;
+            repo = entry.repo;
+            rev = entry.rev;
+            sha256 = sha256;
+          }
+        else
+          throw "GitHub source requires either 'rev' or 'tag'"
+      );
   
   # Build a dependency for iOS
   buildForIOS = name: entry:
@@ -51,6 +77,11 @@ let
       buildSystem = getBuildSystem entry;
       buildFlags = entry.buildFlags.ios or [];
       patches = entry.patches.ios or [];
+      
+      # Determine build inputs based on dependency name
+      waylandDeps = with iosPkgs; [ expat libffi libxml2 ];
+      defaultDeps = [];
+      depInputs = if name == "wayland" then waylandDeps else defaultDeps;
       
       # iOS-specific build configuration
       iosStdenv = iosPkgs.stdenv;
@@ -65,9 +96,7 @@ let
             pkg-config
           ];
           
-          buildInputs = with iosPkgs; [
-            # Add common iOS dependencies here
-          ];
+          buildInputs = depInputs;
           
           cmakeFlags = [
             "-DCMAKE_SYSTEM_NAME=iOS"
@@ -84,7 +113,8 @@ let
       else if buildSystem == "meson" then
         iosPkgs.stdenv.mkDerivation {
           name = "${name}-ios";
-          inherit src patches;
+          src = src;
+          patches = lib.filter (p: p != null && builtins.pathExists (toString p)) patches;
           
           nativeBuildInputs = with iosPkgs; [
             meson
@@ -95,10 +125,7 @@ let
             flex
           ];
           
-          # Mesa-specific build inputs
-          buildInputs = with iosPkgs; [
-            # Add Mesa dependencies if needed
-          ];
+          buildInputs = depInputs;
           
           # Meson setup command
           configurePhase = ''
@@ -178,6 +205,11 @@ let
       buildSystem = getBuildSystem entry;
       buildFlags = entry.buildFlags.macos or [];
       patches = entry.patches.macos or [];
+      
+      # Determine build inputs based on dependency name
+      waylandDeps = with pkgs; [ expat libffi libxml2 ];
+      defaultDeps = [];
+      depInputs = if name == "wayland" then waylandDeps else defaultDeps;
     in
       if buildSystem == "cmake" then
         pkgs.stdenv.mkDerivation {
@@ -194,7 +226,8 @@ let
       else if buildSystem == "meson" then
         pkgs.stdenv.mkDerivation {
           name = "${name}-macos";
-          inherit src patches;
+          src = src;
+          patches = lib.filter (p: p != null && builtins.pathExists (toString p)) patches;
           
           nativeBuildInputs = with pkgs; [
             meson
@@ -205,10 +238,7 @@ let
             flex
           ];
           
-          # Mesa-specific build inputs
-          buildInputs = with pkgs; [
-            # Add Mesa dependencies if needed
-          ];
+          buildInputs = depInputs;
           
           # Meson setup command
           configurePhase = ''
@@ -280,6 +310,7 @@ let
         };
   
   # Build a dependency for Android
+  # Note: Android NDK cross-compilation from macOS may not be fully supported
   buildForAndroid = name: entry:
     let
       src = fetchSource entry;
@@ -287,6 +318,11 @@ let
       buildSystem = getBuildSystem entry;
       buildFlags = entry.buildFlags.android or [];
       patches = entry.patches.android or [];
+      
+      # Determine build inputs based on dependency name
+      waylandDeps = with androidPkgs; [ expat libffi libxml2 ];
+      defaultDeps = [];
+      depInputs = if name == "wayland" then waylandDeps else defaultDeps;
       
       # Android-specific build configuration
       androidStdenv = androidPkgs.stdenv;
@@ -314,7 +350,8 @@ let
       else if buildSystem == "meson" then
         androidPkgs.stdenv.mkDerivation {
           name = "${name}-android";
-          inherit src patches;
+          src = src;
+          patches = lib.filter (p: p != null && builtins.pathExists (toString p)) patches;
           
           nativeBuildInputs = with androidPkgs; [
             meson
