@@ -104,7 +104,43 @@ pkgs.stdenv.mkDerivation {
   
   installPhase = ''
     runHook preInstall
+    # Install headers and libraries
+    # FFmpeg installs headers with 'make install-headers' or 'make install' should include them
     make install
+    
+    # Ensure include directory exists - FFmpeg should install headers to $out/include
+    # But if it doesn't, copy them manually from source
+    if [ ! -d "$out/include" ] || [ -z "$(ls -A $out/include 2>/dev/null)" ]; then
+      echo "Warning: include directory missing or empty, copying headers from source"
+      mkdir -p "$out/include"
+      # Copy headers from source build directory
+      for libdir in libavcodec libavutil libavformat libswscale libswresample libavfilter libavdevice; do
+        if [ -d "$libdir" ]; then
+          # Copy header files
+          find "$libdir" -name "*.h" -exec install -D {} "$out/include/{}" \; 2>/dev/null || true
+        fi
+      done
+      # Also copy top-level headers if they exist
+      if [ -f "libavcodec/avcodec.h" ]; then
+        mkdir -p "$out/include/libavcodec"
+        cp libavcodec/*.h "$out/include/libavcodec/" 2>/dev/null || true
+      fi
+      if [ -f "libavutil/avutil.h" ]; then
+        mkdir -p "$out/include/libavutil"
+        cp libavutil/*.h "$out/include/libavutil/" 2>/dev/null || true
+      fi
+    fi
+    
+    # Verify headers were installed
+    if [ ! -f "$out/include/libavcodec/avcodec.h" ]; then
+      echo "Error: libavcodec/avcodec.h not found after install" >&2
+      exit 1
+    fi
+    if [ ! -f "$out/include/libavutil/avutil.h" ]; then
+      echo "Error: libavutil/avutil.h not found after install" >&2
+      exit 1
+    fi
+    
     runHook postInstall
   '';
   
