@@ -1,0 +1,10 @@
+# Patch: Disable Linux-specific GPU paths for iOS
+#
+# iOS doesn't support Linux DMA-BUF or libgbm. This patch disables those
+# paths and ensures waypipe falls back to shared-memory or Vulkan/Metal.
+#
+# This is a placeholder patch file. Replace with actual patch content.
+#
+# Note: Some of this can be handled via Meson build flags:
+#   -Ddmabuf=false -Dvaapi=false
+# But code paths that check for these features may need patching.

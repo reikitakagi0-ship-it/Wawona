@@ -1,0 +1,9 @@
+# Patch: Android gralloc/DMA-BUF support
+#
+# Android supports DMA-BUF via gralloc buffers. This patch ensures waypipe
+# properly integrates with Android's gralloc system for buffer sharing.
+#
+# This is a placeholder patch file. Replace with actual patch content.
+#
+# Android has DMA-BUF support, but the integration may need adjustments
+# for Android's specific gralloc implementation.

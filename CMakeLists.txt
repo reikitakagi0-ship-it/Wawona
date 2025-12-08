@@ -335,16 +335,11 @@ if(IS_MACOS)
         list(APPEND SOURCES
             src/rendering/vulkan_renderer.m
             src/rendering/vulkan_renderer.h
-            src/stubs/vulkan_ios_wrapper.c
-            src/stubs/vulkan_entrypoint_stubs.c
-            src/stubs/wsi_entrypoint_forwards.c
-            src/stubs/vulkan_cmd_enqueue_stubs.c
-            src/stubs/vulkan_common_stubs.c
         )
         add_definitions(-DHAVE_VULKAN=1)
         message(STATUS "Vulkan headers found - enabling Vulkan renderer on macOS")
         
-        # Vulkan stub is linked via waypipe instead of KosmicKrisp
+        # Vulkan support via KosmicKrisp driver (built from Mesa source)
 
         # Link Angle framework if available
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/macos-dependencies/Frameworks/Angle.framework")
@@ -714,7 +709,7 @@ if(IS_IOS)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ios-dependencies/Frameworks")
         target_link_options(Wawona PRIVATE -F"${CMAKE_CURRENT_SOURCE_DIR}/ios-dependencies/Frameworks")
     endif()
-    # Vulkan stub is linked via waypipe instead of KosmicKrisp
+    # Vulkan support via KosmicKrisp driver (built from Mesa source)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ios-dependencies/Frameworks/Angle.framework/Angle")
         target_link_libraries(Wawona "-framework Angle")
     endif()
@@ -744,11 +739,7 @@ if(IS_IOS)
         message(STATUS "Linking Vulkan library (force-load): ${VULKAN_LIB}")
     endif()
     
-    # Vulkan stub doesn't require kosmickrisp library
-    
-    # Vulkan stub doesn't need expat/zstd (those were KosmicKrisp dependencies)
-    
-    # KosmicKrisp also requires zlib for crc32
+    # KosmicKrisp requires zlib for crc32
     # iOS SDK provides zlib, but we need to link it explicitly
     find_library(ZLIB_LIB
         NAMES z
@@ -780,7 +771,7 @@ if(IS_IOS)
         message(STATUS "Linking C++ standard library via -lc++")
     endif()
     
-    # Enable Vulkan beta extensions for CUDA/AMDX stub support
+    # Enable Vulkan beta extensions for KosmicKrisp support
     target_compile_definitions(Wawona PRIVATE VK_ENABLE_BETA_EXTENSIONS)
     message(STATUS "Enabled Vulkan beta extensions")
     target_compile_options(Wawona PRIVATE
@@ -813,7 +804,7 @@ else()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/macos-dependencies/Frameworks")
         target_link_options(Wawona PRIVATE -F${CMAKE_CURRENT_SOURCE_DIR}/macos-dependencies/Frameworks)
     endif()
-    # Vulkan stub is linked via waypipe instead of KosmicKrisp
+    # Vulkan support via KosmicKrisp driver (built from Mesa source)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/macos-dependencies/Frameworks/Angle.framework/Angle")
         target_link_libraries(Wawona "-framework Angle")
     endif()

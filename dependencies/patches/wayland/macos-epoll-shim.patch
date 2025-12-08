@@ -1,0 +1,12 @@
+# Patch: Use epoll-shim for macOS compatibility
+#
+# macOS doesn't have epoll, but epoll-shim provides a compatible interface
+# using kqueue. This patch ensures Wayland uses epoll-shim on macOS.
+#
+# This is a placeholder patch file. Replace with actual patch content.
+#
+# Note: Instead of a patch file, you might use postPatch in build.nix:
+#   postPatch = ''
+#     substituteInPlace src/event-loop.c \
+#       --replace "#include <sys/epoll.h>" "#include <epoll-shim/epoll.h>"
+#   '';

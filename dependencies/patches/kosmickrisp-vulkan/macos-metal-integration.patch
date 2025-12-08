@@ -1,0 +1,9 @@
+# Patch: macOS Metal/Vulkan integration for Kosmickrisp
+#
+# Kosmickrisp-Vulkan needs macOS-specific Metal integration patches to work
+# properly on macOS. This patch ensures proper Metal backend integration.
+#
+# This is a placeholder patch file. Replace with actual patch content.
+#
+# Note: When Kosmickrisp repository becomes available, update this patch
+# with actual macOS-specific Metal integration code.

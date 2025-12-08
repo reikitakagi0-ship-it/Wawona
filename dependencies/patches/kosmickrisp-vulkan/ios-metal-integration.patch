@@ -1,0 +1,9 @@
+# Patch: iOS Metal/Vulkan integration for Kosmickrisp
+#
+# Kosmickrisp-Vulkan needs iOS-specific Metal integration patches to work
+# properly on iOS devices. This patch ensures proper Metal backend integration.
+#
+# This is a placeholder patch file. Replace with actual patch content.
+#
+# Note: When Kosmickrisp repository becomes available, update this patch
+# with actual iOS-specific Metal integration code.

@@ -1,12 +1,51 @@
 {
   description = "Wawona Multiplex Runner";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs";
+  
   outputs = { self, nixpkgs }: let
     systems = [ "aarch64-darwin" ];
     forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system);
   in {
     packages = forAllSystems (system: let
       pkgs = import nixpkgs { inherit system; };
+      
+      # Import dependencies module
+      depsModule = import ./dependencies/default.nix {
+        lib = pkgs.lib;
+        inherit pkgs;
+      };
+      
+      # Import build module
+      buildModule = import ./dependencies/build.nix {
+        lib = pkgs.lib;
+        inherit pkgs;
+        stdenv = pkgs.stdenv;
+        buildPackages = pkgs.buildPackages;
+      };
+      
+      # Get registry for building individual dependencies
+      registry = depsModule.registry;
+      
+      # Build all dependencies for each platform
+      iosDeps = buildModule.ios;
+      macosDeps = buildModule.macos;
+      androidDeps = buildModule.android;
+      
+      # Create individual dependency packages for each platform
+      # Format: <dependency-name>-<platform>
+      dependencyPackages = let
+        # Helper to create packages for a platform
+        createPlatformPackages = platform: deps:
+          pkgs.lib.mapAttrs' (name: pkg: {
+            name = "${name}-${platform}";
+            value = pkg;
+          }) deps;
+        
+        iosPkgs = createPlatformPackages "ios" iosDeps;
+        macosPkgs = createPlatformPackages "macos" macosDeps;
+        androidPkgs = createPlatformPackages "android" androidDeps;
+      in
+        iosPkgs // macosPkgs // androidPkgs;
       
       # Wrapper script to run make target and show dialog on exit
       wawonaWrapper = pkgs.writeShellScriptBin "wawona-wrapper" ''
@@ -100,7 +139,10 @@
           tmux attach-session -t "$session"
         '';
       };
-    });
+      
+      # Add dependency packages
+      # Format: <dependency-name>-<platform> (e.g., wayland-ios, mesa-kosmickrisp-macos)
+    } // dependencyPackages);
     
     apps = forAllSystems (system: {
       default = {
