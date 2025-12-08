@@ -16,6 +16,9 @@ in
       getIosPkgs = pkgs.pkgsCross.iphone64;
       iosPkgs = getIosPkgs;
       
+      # Import Xcode wrapper utilities - inside function to delay evaluation
+      xcodeUtils = import ./xcode-wrapper.nix { inherit lib pkgs; };
+      
       src = fetchSource entry;
       
       buildSystem = getBuildSystem entry;
@@ -25,7 +28,6 @@ in
       # Determine build inputs based on dependency name
       # For wayland, dependencies will be found via pkg-config
       # We avoid explicit references to avoid circular dependencies
-      # The cross-compilation environment should provide these
       depInputs = [];
     in
       if buildSystem == "cmake" then
@@ -53,17 +55,13 @@ in
           '';
         }
       else if buildSystem == "meson" then
-        # Use iosPkgs.stdenv - it handles iOS cross-compilation properly
-        # Access through let binding to delay evaluation and avoid recursion
-        let
-          stdenv' = iosPkgs.stdenv;
-        in
-        stdenv'.mkDerivation {
+        # Use regular stdenv but configure for iOS cross-compilation
+        # We'll use Xcode's compiler directly to avoid macOS flag conflicts
+        pkgs.stdenv.mkDerivation {
           name = "${name}-ios";
           src = src;
           patches = lib.filter (p: p != null && builtins.pathExists (toString p)) patches;
           
-          # Use buildPackages for native build tools (run on host)
           nativeBuildInputs = with buildPackages; [
             meson
             ninja
@@ -71,27 +69,93 @@ in
             python3
             bison
             flex
+            xcodeUtils.findXcodeScript
           ];
           
-          # Use iosPkgs for target dependencies (built for iOS)
-          # Access lazily to avoid recursion
           buildInputs = depInputs;
           
-          # Set cross-compilation environment
-          crossConfig = "aarch64-apple-ios";
+          # Automatically find and use Xcode if available
+          preConfigure = ''
+            # Find Xcode and set up environment
+            if [ -z "''${XCODE_APP:-}" ]; then
+              XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode || true)
+              if [ -n "$XCODE_APP" ]; then
+                export XCODE_APP
+                export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
+                export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
+                export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+                echo "Found Xcode at: $XCODE_APP"
+                echo "Using iOS SDK: $SDKROOT"
+                
+                # Note: Dependencies (expat, libffi, libxml2) will need to be built for iOS
+                # For now, we'll let the build fail if they're missing, then add them
+              else
+                echo "Warning: Xcode not found. iOS build may fail."
+              fi
+            fi
+          '';
           
           # Meson setup command
-          # Use environment variables set by Nix for cross-compilation
+          # Use Xcode's compiler directly to avoid macOS flag conflicts
           configurePhase = ''
             runHook preConfigure
-            # Create a basic iOS cross file for Meson
-            # Use CC/CXX from environment (set by Nix cross-compilation)
+            # Always use Xcode's compiler if available (it handles iOS properly)
+            # Use xcrun to find the compiler, or check common locations
+            if [ -n "''${DEVELOPER_DIR:-}" ] && [ -d "$DEVELOPER_DIR" ]; then
+              # Try xcrun first (most reliable)
+              if command -v xcrun >/dev/null 2>&1; then
+                IOS_CC=$(xcrun --find clang 2>/dev/null || echo "")
+                IOS_CXX=$(xcrun --find clang++ 2>/dev/null || echo "")
+                if [ -n "$IOS_CC" ] && [ -f "$IOS_CC" ]; then
+                  echo "Using Xcode compiler via xcrun: $IOS_CC"
+                else
+                  # Fallback to direct path
+                  IOS_CC="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
+                  IOS_CXX="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++"
+                fi
+              else
+                # Try toolchain path
+                IOS_CC="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
+                IOS_CXX="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++"
+              fi
+              
+              # Check if compiler exists
+              if [ -f "$IOS_CC" ]; then
+                IOS_AR="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/ar"
+                IOS_STRIP="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/strip"
+                echo "Using Xcode compiler: $IOS_CC"
+                echo "Using Xcode SDK: $SDKROOT"
+              else
+                # Fallback to Nix's clang with iOS target
+                IOS_CC="${buildPackages.clang}/bin/clang"
+                IOS_CXX="${buildPackages.clang}/bin/clang++"
+                IOS_AR="${buildPackages.binutils}/bin/ar"
+                IOS_STRIP="${buildPackages.binutils}/bin/strip"
+                echo "Xcode compiler not found, using Nix compiler: $IOS_CC"
+              fi
+            else
+              # Fallback to Nix's clang with iOS target
+              IOS_CC="${buildPackages.clang}/bin/clang"
+              IOS_CXX="${buildPackages.clang}/bin/clang++"
+              IOS_AR="${buildPackages.binutils}/bin/ar"
+              IOS_STRIP="${buildPackages.binutils}/bin/strip"
+              echo "Xcode not found, using Nix compiler: $IOS_CC"
+            fi
+            
+            # Create iOS cross file for Meson
+            # Add SDK root if available
+            if [ -n "''${SDKROOT:-}" ]; then
+              SDK_ARGS=", '-isysroot', '$SDKROOT'"
+            else
+              SDK_ARGS=""
+            fi
+            
             cat > ios-cross-file.txt <<EOF
             [binaries]
-            c = '$CC'
-            cpp = '$CXX'
-            ar = '$AR'
-            strip = '$STRIP'
+            c = '$IOS_CC'
+            cpp = '$IOS_CXX'
+            ar = '$IOS_AR'
+            strip = '$IOS_STRIP'
             
             [host_machine]
             system = 'darwin'
@@ -100,8 +164,8 @@ in
             endian = 'little'
             
             [built-in options]
-            c_args = ['-arch', 'arm64', '-mios-version-min=15.0']
-            cpp_args = ['-arch', 'arm64', '-mios-version-min=15.0']
+            c_args = ['-arch', 'arm64', '-mios-version-min=15.0'$SDK_ARGS]
+            cpp_args = ['-arch', 'arm64', '-mios-version-min=15.0'$SDK_ARGS]
             EOF
             
             meson setup build \
@@ -112,20 +176,17 @@ in
             runHook postConfigure
           '';
           
-          # Set CC/CXX/AR/STRIP for iOS cross-compilation
-          # Use buildPackages for compiler (runs on host)
-          # The target prefix is 'aarch64-apple-ios-'
+          # Override compiler to avoid macOS flags from stdenv
+          # We'll use Xcode's compiler in configurePhase instead
           CC = "${buildPackages.clang}/bin/clang";
           CXX = "${buildPackages.clang}/bin/clang++";
-          AR = "${buildPackages.binutils}/bin/ar";
-          STRIP = "${buildPackages.binutils}/bin/strip";
           
-          # Set iOS-specific flags
-          NIX_CFLAGS_COMPILE = "-arch arm64 -mios-version-min=15.0 -isysroot ${buildPackages.darwin.iosSdkPkgs.sdk}";
-          NIX_CXXFLAGS_COMPILE = "-arch arm64 -mios-version-min=15.0 -isysroot ${buildPackages.darwin.iosSdkPkgs.sdk}";
+          # Filter out macOS-specific flags - use empty flags to avoid conflicts
+          # The actual compiler flags will be set in the Meson cross file
+          NIX_CFLAGS_COMPILE = "";
+          NIX_CXXFLAGS_COMPILE = "";
           
-          # Set up cross-compilation environment
-          # Dependencies will be added via buildInputs after we get the basic build working
+          # Allow access to Xcode
           __impureHostDeps = [ "/bin/sh" ];
           
           buildPhase = ''
@@ -170,9 +231,27 @@ in
             automake
             libtool
             pkg-config
+            xcodeUtils.findXcodeScript
           ];
           
           buildInputs = depInputs;
+          
+          # Automatically find and use Xcode if available
+          preConfigure = ''
+            # Find Xcode and set up environment
+            if [ -z "''${XCODE_APP:-}" ]; then
+              XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode || true)
+              if [ -n "$XCODE_APP" ]; then
+                export XCODE_APP
+                export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
+                export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
+                export SDKROOT="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+                echo "Found Xcode at: $XCODE_APP"
+              else
+                echo "Warning: Xcode not found. iOS build may fail."
+              fi
+            fi
+          '';
           
           configureFlags = buildFlags;
         };
