@@ -63,7 +63,7 @@ container-build/
 containerization-build/
 
 # Dependencies (cloned git repos - scripts will generate these from scratch)
-dependencies/
+# Note: dependencies/ is now tracked (Nix dependency management system)
 macos-dependencies/
 ios-dependencies/
 android-dependencies/

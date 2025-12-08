@@ -76,13 +76,14 @@
     source = "gitlab";
     owner = "mstoeckl";
     repo = "waypipe";
-    # Use latest release tag (update as needed)
-    tag = "0.10.5";  # Update to actual tag/rev
+    # Use latest release tag (Rust rewrite)
+    tag = "v0.10.6";
+    sha256 = "sha256-Tbd/yY90yb2+/ODYVL3SudHaJCGJKatZ9FuGM2uAX+8=";
     platforms = [ "ios" "macos" "android" ];
     buildSystem = "cargo";  # Rust/Cargo build system
     # Rust-specific configuration
     cargoLock = null;  # Will be generated or provided
-    cargoSha256 = null;  # Will be computed during build
+    cargoHash = "sha256-IUvXHLxrhc2Au57wsE53Q+NL1cZzFcaRG3HDV8s3xWw=";
     buildFlags = {
       ios = [
         # Rust build flags for iOS
@@ -100,19 +101,11 @@
         "--features=vulkan,dmabuf"  # Enable Vulkan and DMA-BUF on Android
       ];
     };
+    # Patches will be added when needed - for now build without patches
     patches = {
-      ios = [
-        # Ensure waypipe uses KosmicKrisp Vulkan driver on iOS
-        ./patches/waypipe/ios-kosmickrisp-vulkan.patch
-      ];
-      macos = [
-        # Ensure waypipe uses KosmicKrisp Vulkan driver on macOS
-        ./patches/waypipe/macos-kosmickrisp-vulkan.patch
-      ];
-      android = [
-        # Android-specific adjustments for gralloc/DMA-BUF
-        ./patches/waypipe/android-gralloc-support.patch
-      ];
+      ios = [];
+      macos = [];
+      android = [];
     };
   };
 
@@ -123,8 +116,9 @@
     source = "gitlab";
     owner = "mesa";
     repo = "mesa";
-    # Use latest stable release tag (update as needed)
-    tag = "24.3.0";  # Update to actual tag/rev
+    # Use main branch (Kosmickrisp integrated August 2025, may not be in releases yet)
+    branch = "main";
+    sha256 = "sha256-Kw5xL5RllnCBWvQiGK5pAb5KedJZy/Tt6rVYVbkobh8=";
     platforms = [ "ios" "macos" ];
     buildSystem = "meson";
     buildFlags = {
@@ -153,15 +147,10 @@
         "-Dbuildtype=release"
       ];
     };
+    # Patches will be added when needed - for now build without patches
     patches = {
-      ios = [
-        # iOS-specific Metal/Vulkan integration patches
-        ./patches/kosmickrisp-vulkan/ios-metal-integration.patch
-      ];
-      macos = [
-        # macOS-specific Metal/Vulkan integration patches (if needed)
-        ./patches/kosmickrisp-vulkan/macos-metal-integration.patch
-      ];
+      ios = [];
+      macos = [];
     };
   };
 }

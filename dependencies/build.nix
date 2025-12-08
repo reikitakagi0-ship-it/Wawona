@@ -30,23 +30,30 @@ let
     in
     if source == "gitlab" then
       (
-        if lib.hasAttr "tag" entry then
-          # For tags, use fetchgit which handles them better
-          pkgs.fetchgit {
-            url = "https://gitlab.freedesktop.org/${entry.owner}/${entry.repo}.git";
-            rev = "refs/tags/${entry.tag}";
-            sha256 = sha256;
-          }
-        else if lib.hasAttr "rev" entry then
-          pkgs.fetchFromGitLab {
-            domain = "gitlab.freedesktop.org";
-            owner = entry.owner;
-            repo = entry.repo;
-            rev = entry.rev;
-            sha256 = sha256;
-          }
-        else
-          throw "GitLab source requires either 'rev' or 'tag'"
+      if lib.hasAttr "tag" entry then
+        # For tags, use fetchgit which handles them better
+        pkgs.fetchgit {
+          url = "https://gitlab.freedesktop.org/${entry.owner}/${entry.repo}.git";
+          rev = "refs/tags/${entry.tag}";
+          sha256 = sha256;
+        }
+      else if lib.hasAttr "branch" entry then
+        # For branches, use fetchgit with rev pointing to the branch
+        pkgs.fetchgit {
+          url = "https://gitlab.freedesktop.org/${entry.owner}/${entry.repo}.git";
+          rev = "refs/heads/${entry.branch}";
+          sha256 = sha256;
+        }
+      else if lib.hasAttr "rev" entry then
+        pkgs.fetchFromGitLab {
+          domain = "gitlab.freedesktop.org";
+          owner = entry.owner;
+          repo = entry.repo;
+          rev = entry.rev;
+          sha256 = sha256;
+        }
+      else
+        throw "GitLab source requires 'rev', 'tag', or 'branch'"
       )
     else
       (
@@ -271,8 +278,11 @@ let
           version = entry.rev or entry.tag or "unknown";
           inherit src patches;
           
+          # Use cargoHash (newer SRI format) or cargoSha256 (older)
+          # If neither provided, use fakeHash to let Nix compute it
+          cargoHash = if entry ? cargoHash && entry.cargoHash != null then entry.cargoHash else lib.fakeHash;
+          cargoSha256 = entry.cargoSha256 or null;
           cargoLock = entry.cargoLock or null;
-          cargoSha256 = entry.cargoSha256 or lib.fakeSha256;
           
           nativeBuildInputs = with pkgs; [
             pkg-config
