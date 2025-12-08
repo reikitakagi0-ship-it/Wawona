@@ -26,8 +26,9 @@ These are the essential dependencies required for all platforms:
 - **ffmpeg** - Multimedia framework for audio/video processing
 
 ### Graphics & Rendering
-- **vulkan-stub** - Vulkan API stubs for platforms without native Vulkan support
-- **Angle** (iOS/macOS) - OpenGL ES implementation for Apple platforms
+- **mesa-kosmickrisp** (macOS/iOS) - Vulkan-to-Metal driver built from Mesa source code, compiles as .dylib
+- **Freedreno/turnip** (Android) - Vulkan driver for Qualcomm Adreno GPUs
+- *(OpenGL support for macOS/iOS is TBD; recommendations welcome)*
 
 ## Platform-Specific Dependencies
 
@@ -93,10 +94,11 @@ These are the essential dependencies required for all platforms:
 - **zstd** - Zstandard compression (optional, for better performance)
 
 ### Waypipe-rs (Rust Implementation)
-If using waypipe-rs instead of the C implementation:
-- **Rust toolchain** (rustc, cargo)
-- **wayland-client** (Rust bindings)
-- **wayland-server** (Rust bindings)
+Waypipe has been rewritten in Rust (version 0.10.0+):
+- **Rust toolchain** (rustc, cargo) - Required for building waypipe
+- **wayland-client** (Rust bindings) - Wayland client library bindings
+- **wayland-server** (Rust bindings) - Wayland server library bindings
+- **mesa-kosmickrisp** - Vulkan driver dependency for macOS/iOS Vulkan support
 - Compression libraries (zlib, lz4, zstd) via Rust crates
 
 ## Dependency Build Order
@@ -109,13 +111,15 @@ For a clean build, dependencies should be built in this order:
 4. **Wayland stack** (wayland, wayland-protocols)
 5. **Graphics** (pixman, xkbcommon)
 6. **Media** (ffmpeg)
-7. **Rendering** (vulkan-stub, Angle framework)
-8. **Network transparency** (waypipe)
+7. **Rendering** (mesa-kosmickrisp Vulkan driver)
+8. **Network transparency** (waypipe-rs with KosmicKrisp support)
 
 ## Notes
 
-- All dependencies are built from source for App Store compliance
+- All dependencies are built from source
 - Dependencies are statically linked where possible
-- Patches may be applied to dependencies for platform compatibility (see `scripts/patches/`)
-- iOS dependencies are cross-compiled using a custom toolchain
-- Android dependencies use the Android NDK toolchain
+- Patches may be applied to dependencies for platform compatibility (see `dependencies/patches/`)
+- iOS dependencies are cross-compiled using Nix cross-compilation toolchains
+- Android dependencies use the Android NDK toolchain via Nix
+- Mesa-KosmicKrisp builds as a .dylib for macOS/iOS
+- Waypipe-rs (Rust) requires KosmicKrisp for Vulkan support on macOS/iOS
