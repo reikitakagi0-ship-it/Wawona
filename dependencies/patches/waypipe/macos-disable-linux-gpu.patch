@@ -1,9 +1,0 @@
-# Patch: Disable Linux-specific GPU paths for macOS
-#
-# macOS doesn't support Linux DMA-BUF or libgbm. This patch disables those
-# paths and ensures waypipe uses Vulkan/Metal fallback (via Kosmickrisp).
-#
-# This is a placeholder patch file. Replace with actual patch content.
-#
-# Similar to iOS patch, but may need macOS-specific adjustments for
-# Vulkan-on-Metal integration.

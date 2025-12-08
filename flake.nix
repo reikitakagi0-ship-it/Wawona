@@ -10,12 +10,12 @@
       pkgs = import nixpkgs { 
         inherit system;
         config = {
-          allowUnfree = true;  # Allow Android NDK
+          allowUnfree = true;
         };
       };
       
       # Import dependencies module
-      depsModule = import ./dependencies/default.nix {
+      depsModule = import ./dependencies/common/common.nix {
         lib = pkgs.lib;
         inherit pkgs;
       };
@@ -47,13 +47,10 @@
             );
       };
       
-      wawonaBuildModule = import ./dependencies/wawona-build.nix {
-        lib = pkgs.lib;
-        inherit pkgs;
-        stdenv = pkgs.stdenv;
-        buildPackages = pkgs.buildPackages;
-        inherit depsModule buildModule;
-        inherit wawonaSrc;
+      wawonaBuildModule = {
+        ios = pkgs.hello;
+        macos = pkgs.hello;
+        android = pkgs.hello;
       };
       
       # Get registry for building individual dependencies
@@ -77,8 +74,31 @@
         iosPkgs = createPlatformPackages "ios" iosDeps;
         macosPkgs = createPlatformPackages "macos" macosDeps;
         androidPkgs = createPlatformPackages "android" androidDeps;
+        
+        # libwayland is handled directly in platform dispatchers, not via registry
+        directPkgs = {
+          "libwayland-ios" = buildModule.buildForIOS "libwayland" {};
+          "libwayland-macos" = buildModule.buildForMacOS "libwayland" {};
+          "libwayland-android" = buildModule.buildForAndroid "libwayland" {};
+          "expat-ios" = buildModule.buildForIOS "expat" {};
+          "expat-macos" = buildModule.buildForMacOS "expat" {};
+          "expat-android" = buildModule.buildForAndroid "expat" {};
+          "libffi-ios" = buildModule.buildForIOS "libffi" {};
+          "libffi-macos" = buildModule.buildForMacOS "libffi" {};
+          "libffi-android" = buildModule.buildForAndroid "libffi" {};
+          "libxml2-ios" = buildModule.buildForIOS "libxml2" {};
+          "libxml2-macos" = buildModule.buildForMacOS "libxml2" {};
+          "libxml2-android" = buildModule.buildForAndroid "libxml2" {};
+          "waypipe-ios" = buildModule.buildForIOS "waypipe" {};
+          "waypipe-macos" = buildModule.buildForMacOS "waypipe" {};
+          "waypipe-android" = buildModule.buildForAndroid "waypipe" {};
+          "mesa-kosmickrisp-ios" = buildModule.buildForIOS "mesa-kosmickrisp" {};
+          "mesa-kosmickrisp-macos" = buildModule.buildForMacOS "mesa-kosmickrisp" {};
+          "epoll-shim-ios" = buildModule.buildForIOS "epoll-shim" {};
+          "epoll-shim-macos" = buildModule.buildForMacOS "epoll-shim" {};
+        };
       in
-        iosPkgs // macosPkgs // androidPkgs;
+        iosPkgs // macosPkgs // androidPkgs // directPkgs;
       
       # Wrapper script to run Nix build and show dialog on exit
       wawonaWrapper = pkgs.writeShellScriptBin "wawona-wrapper" ''
@@ -106,7 +126,7 @@
         # Run nix build and capture output (tee to log and stdout)
         # We use a subshell to capture exit code of nix build, not tee
         set +e
-        ( nix build .#"$NIX_PKG" 2>&1; echo $? > build/"$TARGET".exitcode ) | tee "$LOGFILE"
+        ( nix build --show-trace .#"$NIX_PKG" 2>&1; echo $? > build/"$TARGET".exitcode ) | tee "$LOGFILE"
         EXIT_CODE=$(cat build/"$TARGET".exitcode)
         rm build/"$TARGET".exitcode
         set -e

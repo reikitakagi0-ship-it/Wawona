@@ -1,125 +1,264 @@
-# Wawona Compositor Dependencies
+# Dependency Management System
 
-This document lists all dependencies required to build Wawona Compositor for macOS, iOS, and Android.
+## Overview
 
-## Core Dependencies
+The dependency management system in `./dependencies` provides a scalable, maintainable way to build dependencies for iOS, macOS, and Android using Nix cross-compilation. Each dependency is self-contained, and platform builders are generic and reusable.
 
-These are the essential dependencies required for all platforms:
+## Structure
 
-### Wayland Stack
-- **wayland** - Core Wayland protocol library (libwayland-server, libwayland-client)
-- **wayland-protocols** - Wayland protocol definitions and extensions
-- **waypipe** - Network transparency for Wayland applications
+```
+dependencies/
+├── deps/                    # Individual dependency definitions
+│   ├── wayland.nix
+│   ├── waypipe.nix
+│   └── mesa-kosmickrisp.nix
+├── platforms/                # Platform-specific build logic
+│   ├── ios.nix
+│   ├── macos.nix
+│   └── android.nix
+├── common/                   # Shared utilities
+│   ├── common.nix           # Helper functions
+│   └── registry.nix         # Aggregates all dependencies
+├── utils/                    # Platform-specific utilities
+│   ├── xcode-wrapper.nix   # Xcode detection for iOS
+│   └── find-xcode.sh
+├── build.nix                 # Main orchestrator
+└── patches/                  # Platform-specific patches
+    ├── wayland/
+    ├── waypipe/
+    └── kosmickrisp-vulkan/
+```
 
-### System Libraries
-- **epoll-shim** - epoll compatibility layer for macOS/iOS
-- **libffi** - Foreign Function Interface library
-- **expat** - XML parsing library
-- **libxml2** - XML processing library
-- **pixman** - Low-level pixel manipulation library
-- **xkbcommon** - Keyboard handling library
-- **zlib** - Compression library
-- **lz4** - Fast compression library
-- **zstd** - Zstandard compression library
+## Adding a New Dependency
 
-### Media & Codecs
-- **ffmpeg** - Multimedia framework for audio/video processing
+### Step 1: Create Dependency File
 
-### Graphics & Rendering
-- **mesa-kosmickrisp** (macOS/iOS) - Vulkan-to-Metal driver built from Mesa source code, compiles as .dylib
-- **Freedreno/turnip** (Android) - Vulkan driver for Qualcomm Adreno GPUs
-- *(OpenGL support for macOS/iOS is TBD; recommendations welcome)*
+Create `dependencies/deps/newdep.nix`:
 
-## Platform-Specific Dependencies
+```nix
+{
+  source = "github";  # or "gitlab"
+  owner = "owner";
+  repo = "repo";
+  tag = "v1.0.0";     # or rev = "abc123..." or branch = "main"
+  sha256 = "sha256-...";
+  platforms = [ "ios" "macos" "android" ];
+  buildSystem = "meson";  # or "cmake", "cargo", "autotools"
+  buildFlags = {
+    ios = [ "-Dflag1" "-Dflag2" ];
+    macos = [ "-Dflag1" ];
+    android = [ "-Dflag1" ];
+  };
+  patches = {
+    ios = [ ../patches/newdep/ios-fix.patch ];
+    macos = [];
+    android = [];
+  };
+  dependencies = {
+    macos = [ "expat" "libffi" ];
+    ios = [ "expat" "libffi" ];
+    android = [ "expat" ];
+  };
+}
+```
 
-### macOS
-- Apple Frameworks:
-  - Foundation
-  - AppKit
-  - QuartzCore
-  - CoreVideo
-  - CoreMedia
-  - CoreGraphics
-  - Metal
-  - MetalKit
-  - IOSurface
-  - VideoToolbox
-  - AVFoundation
+### Step 2: Register Dependency
 
-### iOS
-- Apple Frameworks:
-  - Foundation
-  - UIKit
-  - QuartzCore
-  - CoreVideo
-  - CoreMedia
-  - CoreGraphics
-  - Metal
-  - MetalKit
-  - IOSurface
-  - VideoToolbox
-  - AVFoundation
+Add to `dependencies/common/registry.nix`:
 
-### Android
-- Android NDK
-- EGL (via Android system libraries)
-- Vulkan (via Android system libraries)
+```nix
+{
+  wayland = import ../deps/wayland.nix;
+  waypipe = import ../deps/waypipe.nix;
+  "mesa-kosmickrisp" = import ../deps/mesa-kosmickrisp.nix;
+  newdep = import ../deps/newdep.nix;
+}
+```
 
-## Build Tools
+### Step 3: Build
 
-### Required Build Tools
-- **cmake** (3.20+) - Build system
-- **meson** - Build system for some dependencies
-- **ninja** - Build tool
-- **pkg-config** - Package configuration tool
-- **autotools** (autoconf, automake, libtool) - For some dependencies
+```bash
+nix build --show-trace '.#newdep-macos'
+nix build --show-trace '.#newdep-ios'
+nix build --show-trace '.#newdep-android'
+```
 
-### Host Tools (for cross-compilation)
-- **host-cmake** - CMake for the build host
-- **host-pkg-config** - pkg-config for the build host
-- **host-autotools** - Autotools for the build host
+## Dependency Configuration
 
-## Wayland & Waypipe Dependencies
+### Source Options
 
-### Wayland Core Dependencies
-- **libffi** - Required for Wayland's dynamic binding
-- **expat** - XML parsing for protocol definitions
-- **pixman** - Pixel manipulation for Wayland buffers
+- `source`: `"github"` or `"gitlab"` (default: `"github"`)
+- `owner`: Repository owner
+- `repo`: Repository name
+- `tag`: Git tag (e.g., `"v1.0.0"`)
+- `rev`: Git commit hash (e.g., `"abc123..."`)
+- `branch`: Git branch (e.g., `"main"`)
+- `sha256`: Source hash (required)
 
-### Waypipe Dependencies
-- **wayland-client** - Wayland client library (for waypipe client)
-- **wayland-server** - Wayland server library (for waypipe server)
-- **zlib** - Compression for network transport
-- **lz4** - Fast compression (optional, for better performance)
-- **zstd** - Zstandard compression (optional, for better performance)
+### Build Configuration
 
-### Waypipe-rs (Rust Implementation)
-Waypipe has been rewritten in Rust (version 0.10.0+):
-- **Rust toolchain** (rustc, cargo) - Required for building waypipe
-- **wayland-client** (Rust bindings) - Wayland client library bindings
-- **wayland-server** (Rust bindings) - Wayland server library bindings
-- **mesa-kosmickrisp** - Vulkan driver dependency for macOS/iOS Vulkan support
-- Compression libraries (zlib, lz4, zstd) via Rust crates
+- `platforms`: List of platforms: `[ "ios" "macos" "android" ]`
+- `buildSystem`: `"meson"`, `"cmake"`, `"cargo"`, `"rust"`, or `"autotools"`
+- `buildFlags`: Platform-specific flags
+  ```nix
+  buildFlags = {
+    ios = [ "-Dflag1" "-Dflag2" ];
+    macos = [ "-Dflag1" ];
+  };
+  ```
+- `patches`: Platform-specific patches
+  ```nix
+  patches = {
+    ios = [ ../patches/dep/ios-fix.patch ];
+    macos = [];
+  };
+  ```
 
-## Dependency Build Order
+### Rust/Cargo Specific
 
-For a clean build, dependencies should be built in this order:
+- `cargoHash`: Cargo hash (SRI format)
+- `cargoSha256`: Legacy cargo hash
+- `cargoLock`: Path to Cargo.lock (optional)
 
-1. **Host tools** (cmake, pkg-config, autotools)
-2. **System compatibility** (epoll-shim, libffi)
-3. **Core libraries** (expat, libxml2, zlib, lz4, zstd)
-4. **Wayland stack** (wayland, wayland-protocols)
-5. **Graphics** (pixman, xkbcommon)
-6. **Media** (ffmpeg)
-7. **Rendering** (mesa-kosmickrisp Vulkan driver)
-8. **Network transparency** (waypipe-rs with KosmicKrisp support)
+### Dependencies
 
-## Notes
+Declare platform-specific dependencies:
 
-- All dependencies are built from source
-- Dependencies are statically linked where possible
-- Patches may be applied to dependencies for platform compatibility (see `dependencies/patches/`)
-- iOS dependencies are cross-compiled using Nix cross-compilation toolchains
-- Android dependencies use the Android NDK toolchain via Nix
-- Mesa-KosmicKrisp builds as a .dylib for macOS/iOS
-- Waypipe-rs (Rust) requires KosmicKrisp for Vulkan support on macOS/iOS
+```nix
+dependencies = {
+  macos = [ "expat" "libffi" "libxml2" ];
+  ios = [ "expat" "libffi" "libxml2" ];
+  android = [ "expat" "libffi" ];
+};
+```
+
+Supported dependency names:
+- `expat`, `libffi`, `libxml2`
+- `libclc`, `zlib`, `zstd`, `llvm`
+
+## Platform Builders
+
+Platform builders in `platforms/` are generic and handle all build systems:
+
+- `platforms/ios.nix` - iOS cross-compilation with Xcode integration
+- `platforms/macos.nix` - Native macOS builds
+- `platforms/android.nix` - Android cross-compilation
+
+Each platform builder:
+1. Fetches source using `common.fetchSource`
+2. Applies platform-specific patches
+3. Resolves dependencies from `entry.dependencies`
+4. Builds using the specified build system
+
+## Build Systems
+
+### Meson
+
+```nix
+buildSystem = "meson";
+buildFlags = {
+  macos = [ "-Doption=value" ];
+};
+```
+
+### CMake
+
+```nix
+buildSystem = "cmake";
+buildFlags = {
+  macos = [ "-DOPTION=value" ];
+};
+```
+
+### Cargo/Rust
+
+```nix
+buildSystem = "cargo";
+cargoHash = "sha256-...";
+buildFlags = {
+  macos = [ "--target=aarch64-apple-darwin" "--features=feature" ];
+};
+```
+
+### Autotools
+
+```nix
+buildSystem = "autotools";
+buildFlags = {
+  macos = [ "--enable-feature" ];
+};
+```
+
+## iOS Specifics
+
+### Xcode Integration
+
+iOS builds automatically detect and use Xcode:
+- Finds Xcode via `utils/find-xcode.sh`
+- Sets `DEVELOPER_DIR`, `SDKROOT`, `PATH`
+- Uses Xcode's compiler for iOS builds
+
+### Cross-Compilation
+
+Uses `pkgs.pkgsCross.iphone64` for iOS builds. Dependencies are resolved from `iosPkgs` (e.g., `iosPkgs.expat`).
+
+## Building Dependencies
+
+### Build Single Dependency
+
+```bash
+nix build --show-trace '.#wayland-macos'
+nix build --show-trace '.#wayland-ios'
+nix build --show-trace '.#wayland-android'
+```
+
+### Build All Dependencies for Platform
+
+```bash
+nix build --show-trace '.#ios'      # All iOS dependencies
+nix build --show-trace '.#macos'    # All macOS dependencies
+nix build --show-trace '.#android'  # All Android dependencies
+```
+
+### Build from Flake
+
+All dependencies are available as flake outputs:
+
+```bash
+nix build --show-trace '.#wayland-macos'
+nix build --show-trace '.#waypipe-ios'
+nix build --show-trace '.#mesa-kosmickrisp-macos'
+```
+
+## Scalability
+
+The structure scales to 100+ dependencies:
+
+1. **One file per dependency** - Easy to add/modify without touching other files
+2. **Dependencies declared in dependency files** - Self-contained configuration
+3. **Platform files are generic** - No hardcoded dependency logic
+4. **Registry is simple aggregation** - Just imports all dependencies
+5. **Easy to add new platforms** - Create new platform file following the pattern
+
+## Troubleshooting
+
+### Build Fails with "dependency not found"
+
+Ensure the dependency is listed in `entry.dependencies.<platform>` and the dependency name is supported in the platform builder's `getDeps` function.
+
+### iOS Build Fails
+
+- Ensure Xcode is installed
+- Check that `utils/find-xcode.sh` can find Xcode
+- Verify iOS SDK is available
+
+### Hash Mismatch
+
+Update `sha256` in the dependency file. Nix will show the correct hash on first build.
+
+## Examples
+
+See existing dependencies for examples:
+- `deps/wayland.nix` - Meson build with dependencies
+- `deps/waypipe.nix` - Cargo/Rust build
+- `deps/mesa-kosmickrisp.nix` - Complex Meson build with many flags
