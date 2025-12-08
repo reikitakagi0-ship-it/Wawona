@@ -22,13 +22,9 @@ in
       patches = entry.patches.android or [];
       
       # Determine build inputs based on dependency name
-      # For wayland, we need expat, libffi, libxml2
-      # These are target packages (built for Android)
-      depInputs = if name == "wayland" then [
-        androidPkgs.expat
-        androidPkgs.libffi
-        androidPkgs.libxml2
-      ] else [];
+      # For wayland, dependencies will be resolved via pkg-config
+      # Avoid explicit references to prevent recursion
+      depInputs = [];
     in
       if buildSystem == "cmake" then
         androidPkgs.stdenv.mkDerivation {
