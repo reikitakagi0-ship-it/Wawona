@@ -1599,22 +1599,25 @@ PYTHON_EOF
   postInstall = ''
     # Create a wrapper script that sets VK_ICD_FILENAMES/VK_DRIVER_FILES for kosmickrisp
     if [ -f "$out/bin/waypipe" ]; then
-      mv "$out/bin/waypipe" "$out/bin/waypipe.real"
-      cat > "$out/bin/waypipe" <<EOF
-#!/bin/sh
-# Set Vulkan ICD path for kosmickrisp driver
-# Mesa/kosmickrisp installs ICD JSON to share/vulkan/icd.d/ or lib/vulkan/icd.d/
-if [ -f "${kosmickrisp}/share/vulkan/icd.d/kosmickrisp_icd.json" ]; then
-  export VK_DRIVER_FILES="${kosmickrisp}/share/vulkan/icd.d/kosmickrisp_icd.json"
-  export VK_ICD_FILENAMES="${kosmickrisp}/share/vulkan/icd.d/kosmickrisp_icd.json"
-elif [ -f "${kosmickrisp}/lib/vulkan/icd.d/kosmickrisp_icd.json" ]; then
-  export VK_DRIVER_FILES="${kosmickrisp}/lib/vulkan/icd.d/kosmickrisp_icd.json"
-  export VK_ICD_FILENAMES="${kosmickrisp}/lib/vulkan/icd.d/kosmickrisp_icd.json"
-fi
-# Add kosmickrisp library to library path
-export DYLD_LIBRARY_PATH="${kosmickrisp}/lib:''${DYLD_LIBRARY_PATH:-}"
-exec "$out/bin/waypipe.real" "$@"
-EOF
+      mv "$out/bin/waypipe" "$out/bin/waypipe.bin"
+      {
+        echo '#!/bin/sh'
+        echo '# Set Vulkan ICD path for kosmickrisp driver'
+        echo '# Mesa/kosmickrisp installs ICD JSON to share/vulkan/icd.d/ or lib/vulkan/icd.d/'
+        echo 'if [ -f "${kosmickrisp}/share/vulkan/icd.d/kosmickrisp_icd.json" ]; then'
+        echo '  export VK_DRIVER_FILES="${kosmickrisp}/share/vulkan/icd.d/kosmickrisp_icd.json"'
+        echo '  export VK_ICD_FILENAMES="${kosmickrisp}/share/vulkan/icd.d/kosmickrisp_icd.json"'
+        echo 'elif [ -f "${kosmickrisp}/lib/vulkan/icd.d/kosmickrisp_icd.json" ]; then'
+        echo '  export VK_DRIVER_FILES="${kosmickrisp}/lib/vulkan/icd.d/kosmickrisp_icd.json"'
+        echo '  export VK_ICD_FILENAMES="${kosmickrisp}/lib/vulkan/icd.d/kosmickrisp_icd.json"'
+        echo 'fi'
+        echo '# Add kosmickrisp library to library path'
+        echo 'export DYLD_LIBRARY_PATH="${kosmickrisp}/lib:''${DYLD_LIBRARY_PATH:-}"'
+        echo 'exec -a waypipe "$out/bin/waypipe.bin" "$@"'
+      } > "$out/bin/waypipe"
+      # Replace Nix variables after writing
+      sed -i "s|\''${kosmickrisp}|${kosmickrisp}|g" "$out/bin/waypipe"
+      sed -i "s|\''$out|$out|g" "$out/bin/waypipe"
       chmod +x "$out/bin/waypipe"
     fi
   '';

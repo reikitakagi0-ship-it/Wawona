@@ -5,8 +5,8 @@
 #import <QuartzCore/QuartzCore.h>
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 #import <libproc.h>
+#import "WawonaPreferencesManager.h"
 #endif
-// WawonaPreferencesManager.h is now wrapped by WawonaSettings.h
 #endif
 #include "logging.h"
 #include "wayland_fullscreen_shell.h"

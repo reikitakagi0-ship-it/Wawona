@@ -66,12 +66,56 @@
       $tmux attach -t wawona
     '';
 
+    # Individual dependency packages for each platform
+    iosDeps = buildModule.ios;
+    macosDeps = buildModule.macos;
+    androidDeps = buildModule.android;
+
+    waypipeMacosWrapper = pkgs.writeShellScriptBin "waypipe-macos" ''
+      exec "${macosDeps.waypipe}/bin/waypipe" "$@"
+    '';
+
   in {
     packages.${system} = {
       default = wawonaBuildModule.macos;
       wawona-ios = wawonaBuildModule.ios;
       wawona-macos = wawonaBuildModule.macos;
       wawona-android = wawonaBuildModule.android;
+      
+      # iOS dependencies
+      waypipe-ios = iosDeps.waypipe;
+      ffmpeg-ios = iosDeps.ffmpeg;
+      "libwayland-ios" = iosDeps.libwayland;
+      "kosmickrisp-ios" = iosDeps.kosmickrisp;
+      "lz4-ios" = iosDeps.lz4;
+      "zstd-ios" = iosDeps.zstd;
+      "expat-ios" = iosDeps.expat;
+      "libffi-ios" = iosDeps.libffi;
+      "libxml2-ios" = iosDeps.libxml2;
+      "epoll-shim-ios" = iosDeps."epoll-shim";
+      
+      # macOS dependencies
+      waypipe-macos = macosDeps.waypipe;
+      ffmpeg-macos = macosDeps.ffmpeg;
+      "libwayland-macos" = macosDeps.libwayland;
+      "kosmickrisp-macos" = macosDeps.kosmickrisp;
+      "lz4-macos" = macosDeps.lz4;
+      "zstd-macos" = macosDeps.zstd;
+      "expat-macos" = macosDeps.expat;
+      "libffi-macos" = macosDeps.libffi;
+      "libxml2-macos" = macosDeps.libxml2;
+      "epoll-shim-macos" = macosDeps."epoll-shim";
+      
+      # Android dependencies
+      waypipe-android = androidDeps.waypipe;
+      ffmpeg-android = androidDeps.ffmpeg;
+      "libwayland-android" = androidDeps.libwayland;
+      "swiftshader-android" = androidDeps.swiftshader;
+      "lz4-android" = androidDeps.lz4;
+      "zstd-android" = androidDeps.zstd;
+      "expat-android" = androidDeps.expat;
+      "libffi-android" = androidDeps.libffi;
+      "libxml2-android" = androidDeps.libxml2;
     };
 
     apps.${system} = {
@@ -80,6 +124,7 @@
       wawona-android = { type = "app"; program = "${wawonaBuildModule.android}/bin/wawona-android-run"; };
       wawona-macos = { type = "app"; program = "${wawonaBuildModule.macos}/bin/Wawona"; };
       update-android-deps = { type = "app"; program = "${updateAndroidDeps}/bin/update-android-deps"; };
+      waypipe-macos = { type = "app"; program = "${waypipeMacosWrapper}/bin/waypipe-macos"; };
     };
     
     devShells.${system}.default = pkgs.mkShell {

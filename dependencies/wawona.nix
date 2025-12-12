@@ -581,17 +581,149 @@ EOF
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>CFBundleIcons</key>
+    <dict>
+        <key>CFBundlePrimaryIcon</key>
+        <dict>
+            <key>CFBundleIconFiles</key>
+            <array>
+                <string>AppIcon</string>
+            </array>
+            <key>CFBundleIconName</key>
+            <string>AppIcon</string>
+        </dict>
+    </dict>
     <key>CFBundleIconFile</key>
-    <string>AppIcon.png</string>
+    <string>AppIcon.icns</string>
 </dict>
 </plist>
 EOF
       
-      # Copy AppIcon
+      # Create Assets.xcassets structure for dark mode icon support
+      mkdir -p $out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset
+      
+      # Create root Contents.json for Assets.xcassets
+      cat > $out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/Contents.json <<'ASSETSCATALOGJSON'
+{
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
+ASSETSCATALOGJSON
+      
+      # Copy light mode icon (default)
       if [ -f $src/src/resources/Wawona@2x/Wawona-iOS-Default-1024x1024@2x.png ]; then
         cp $src/src/resources/Wawona@2x/Wawona-iOS-Default-1024x1024@2x.png \
-           $out/Applications/Wawona.app/Contents/Resources/AppIcon.png
+           $out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png
       fi
+      
+      # Copy dark mode icon
+      if [ -f $src/src/resources/Wawona@2x/Wawona-iOS-Dark-1024x1024@2x.png ]; then
+        cp $src/src/resources/Wawona@2x/Wawona-iOS-Dark-1024x1024@2x.png \
+           $out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024-dark.png
+      fi
+      
+      # Create Contents.json for AppIcon.appiconset with dark mode support (macOS format)
+      cat > $out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json <<'ICONJSON'
+{
+  "images" : [
+    {
+      "filename" : "AppIcon-1024.png",
+      "idiom" : "mac",
+      "scale" : "1x",
+      "size" : "512x512"
+    },
+    {
+      "filename" : "AppIcon-1024.png",
+      "idiom" : "mac",
+      "scale" : "2x",
+      "size" : "512x512"
+    },
+    {
+      "appearances" : [
+        {
+          "appearance" : "luminosity",
+          "value" : "dark"
+        }
+      ],
+      "filename" : "AppIcon-1024-dark.png",
+      "idiom" : "mac",
+      "scale" : "1x",
+      "size" : "512x512"
+    },
+    {
+      "appearances" : [
+        {
+          "appearance" : "luminosity",
+          "value" : "dark"
+        }
+      ],
+      "filename" : "AppIcon-1024-dark.png",
+      "idiom" : "mac",
+      "scale" : "2x",
+      "size" : "512x512"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
+ICONJSON
+      
+      # Verify icon files were copied
+      if [ ! -f "$out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png" ]; then
+        echo "Warning: Light mode icon not found!"
+      fi
+      if [ ! -f "$out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024-dark.png" ]; then
+        echo "Warning: Dark mode icon not found!"
+      fi
+      
+      # Also create .icns file as fallback for macOS compatibility
+      # Create temporary iconset directory for iconutil
+      TEMP_ICONSET=$(mktemp -d)
+      mkdir -p "$TEMP_ICONSET/AppIcon.iconset"
+      
+      # Copy icons to iconset with proper naming for iconutil
+      if [ -f "$out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png" ]; then
+        # Create various sizes from the 1024x1024 source (iconutil expects specific sizes)
+        cp "$out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png" \
+           "$TEMP_ICONSET/AppIcon.iconset/icon_512x512@2x.png"
+        # Use sips to create other required sizes if available
+        if command -v sips >/dev/null 2>&1; then
+          sips -z 512 512 "$out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png" \
+               --out "$TEMP_ICONSET/AppIcon.iconset/icon_512x512.png" 2>/dev/null || true
+          sips -z 256 256 "$out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png" \
+               --out "$TEMP_ICONSET/AppIcon.iconset/icon_256x256@2x.png" 2>/dev/null || true
+          sips -z 128 128 "$out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png" \
+               --out "$TEMP_ICONSET/AppIcon.iconset/icon_128x128@2x.png" 2>/dev/null || true
+          sips -z 32 32 "$out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png" \
+               --out "$TEMP_ICONSET/AppIcon.iconset/icon_32x32@2x.png" 2>/dev/null || true
+          sips -z 16 16 "$out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png" \
+               --out "$TEMP_ICONSET/AppIcon.iconset/icon_16x16@2x.png" 2>/dev/null || true
+        fi
+        # Copy 1024 as fallback for all sizes
+        cp "$out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png" \
+           "$TEMP_ICONSET/AppIcon.iconset/icon_512x512.png" 2>/dev/null || true
+        cp "$out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png" \
+           "$TEMP_ICONSET/AppIcon.iconset/icon_256x256.png" 2>/dev/null || true
+        cp "$out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png" \
+           "$TEMP_ICONSET/AppIcon.iconset/icon_128x128.png" 2>/dev/null || true
+        cp "$out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png" \
+           "$TEMP_ICONSET/AppIcon.iconset/icon_32x32.png" 2>/dev/null || true
+        cp "$out/Applications/Wawona.app/Contents/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png" \
+           "$TEMP_ICONSET/AppIcon.iconset/icon_16x16.png" 2>/dev/null || true
+        
+        # Generate .icns file using iconutil
+        if command -v iconutil >/dev/null 2>&1; then
+          iconutil -c icns "$TEMP_ICONSET/AppIcon.iconset" \
+                  -o "$out/Applications/Wawona.app/Contents/Resources/AppIcon.icns" 2>/dev/null || true
+        fi
+      fi
+      
+      # Cleanup temp directory
+      rm -rf "$TEMP_ICONSET"
       
       runHook postInstall
     '';
@@ -929,8 +1061,18 @@ EOF
     <false/>
     <key>UILaunchScreen</key>
     <dict/>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon.png</string>
+    <key>CFBundleIcons</key>
+    <dict>
+        <key>CFBundlePrimaryIcon</key>
+        <dict>
+            <key>CFBundleIconFiles</key>
+            <array>
+                <string>AppIcon</string>
+            </array>
+            <key>CFBundleIconName</key>
+            <string>AppIcon</string>
+        </dict>
+    </dict>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>UIRequiredDeviceCapabilities</key>
@@ -948,11 +1090,50 @@ EOF
 </plist>
 EOF
       
-      # Copy AppIcon
+      # Create Assets.xcassets structure for dark mode icon support
+      mkdir -p $out/Applications/Wawona.app/Assets.xcassets/AppIcon.appiconset
+      
+      # Copy light mode icon (default)
       if [ -f $src/src/resources/Wawona@2x/Wawona-iOS-Default-1024x1024@2x.png ]; then
         cp $src/src/resources/Wawona@2x/Wawona-iOS-Default-1024x1024@2x.png \
-           $out/Applications/Wawona.app/AppIcon.png
+           $out/Applications/Wawona.app/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png
       fi
+      
+      # Copy dark mode icon
+      if [ -f $src/src/resources/Wawona@2x/Wawona-iOS-Dark-1024x1024@2x.png ]; then
+        cp $src/src/resources/Wawona@2x/Wawona-iOS-Dark-1024x1024@2x.png \
+           $out/Applications/Wawona.app/Assets.xcassets/AppIcon.appiconset/AppIcon-1024-dark.png
+      fi
+      
+      # Create Contents.json for AppIcon.appiconset with dark mode support
+      cat > $out/Applications/Wawona.app/Assets.xcassets/AppIcon.appiconset/Contents.json <<'ICONJSON'
+{
+  "images" : [
+    {
+      "filename" : "AppIcon-1024.png",
+      "idiom" : "universal",
+      "platform" : "ios",
+      "size" : "1024x1024"
+    },
+    {
+      "appearances" : [
+        {
+          "appearance" : "luminosity",
+          "value" : "dark"
+        }
+      ],
+      "filename" : "AppIcon-1024-dark.png",
+      "idiom" : "universal",
+      "platform" : "ios",
+      "size" : "1024x1024"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
+ICONJSON
       
       # Copy Settings.bundle if it exists
       if [ -d $src/src/resources/Settings.bundle ]; then
@@ -1166,6 +1347,7 @@ EOF
       zip
       patchelf
       file
+      util-linux  # Provides setsid for creating new process groups
     ];
     
     buildInputs = (getDeps "android" androidDeps) ++ [
@@ -1389,10 +1571,11 @@ EOF
       # Create wrapper script that uses Nix-provided Android emulator
       cat > $out/bin/wawona-android-run <<EOF
 #!/usr/bin/env bash
-set -e
+# Don't use set -e here - we want to handle errors gracefully
+set +e
 
 # Setup environment from Nix build
-export PATH="${lib.makeBinPath [ androidSDK.platform-tools androidSDK.emulator androidSDK.androidsdk ]}:\$PATH"
+export PATH="${lib.makeBinPath [ androidSDK.platform-tools androidSDK.emulator androidSDK.androidsdk pkgs.util-linux ]}:\$PATH"
 export ANDROID_SDK_ROOT="${androidSDK.androidsdk}/libexec/android-sdk"
 export ANDROID_HOME="\$ANDROID_SDK_ROOT"
 
@@ -1438,35 +1621,87 @@ fi
 # Ensure adb server is running
 adb start-server
 
-RUNNING_EMULATORS=\$(adb devices | grep -E "emulator-[0-9]+" | grep "device$" | wc -l | tr -d ' ')
+# Check for running emulators by both adb and process name
+# This ensures we catch emulators even if adb hasn't fully detected them yet
+# We check for ANY emulator process first, then verify it's the right AVD
+EMULATOR_PROCESS=\$(pgrep -f "emulator.*\$AVD_NAME" | head -n 1)
+
+# If we found an emulator process, check if adb can see it
+if [ -n "\$EMULATOR_PROCESS" ]; then
+  # Wait a bit for adb to detect the emulator
+  sleep 2
+  RUNNING_EMULATORS=\$(adb devices | grep -E "emulator-[0-9]+" | grep "device$" | wc -l | tr -d ' ')
+  
+  # If adb still doesn't see it, check if the process is actually running
+  if [ "\$RUNNING_EMULATORS" -eq 0 ]; then
+    # Check if process is still alive
+    if kill -0 "\$EMULATOR_PROCESS" 2>/dev/null; then
+      # Process is running but adb hasn't detected it yet - wait longer
+      sleep 3
+      RUNNING_EMULATORS=\$(adb devices | grep -E "emulator-[0-9]+" | grep "device$" | wc -l | tr -d ' ')
+    else
+      # Process died, reset
+      EMULATOR_PROCESS=""
+    fi
+  fi
+else
+  # No emulator process found, check adb anyway
+  RUNNING_EMULATORS=\$(adb devices | grep -E "emulator-[0-9]+" | grep "device$" | wc -l | tr -d ' ')
+fi
 
 if [ "\$RUNNING_EMULATORS" -gt 0 ]; then
   EMULATOR_SERIAL=\$(adb devices | grep -E "emulator-[0-9]+" | grep "device$" | head -n 1 | awk '{print \$1}')
 else
   
-  # Start emulator in background - detached to survive script termination (e.g. SIGTERM/Ctrl+C)
-  # We use nohup and redirect input to detach from terminal signals
-  nohup emulator -avd "\$AVD_NAME" -no-snapshot-load -gpu auto < /dev/null >/tmp/emulator.log 2>&1 &
-  EMULATOR_PID=\$!
+  # Start emulator in a completely detached way that survives SIGTERM
+  # Use setsid (from util-linux) to create a new session and process group
+  # This isolates the emulator from this script's process group, preventing SIGTERM propagation
+  # setsid creates a new session, making the emulator immune to signals sent to the parent
+  setsid nohup emulator -avd "\$AVD_NAME" -no-snapshot-load -gpu auto < /dev/null >>/tmp/emulator.log 2>&1 &
   
-  # Disown to remove from shell job table
-  disown \$EMULATOR_PID
+  # Give emulator a moment to start
+  sleep 3
   
-  cleanup() {
+  # Find the emulator PID by process name (should now be child of init, not this script)
+  # Try multiple times as emulator takes time to fully start
+  EMULATOR_PID=""
+  for i in 1 2 3 4 5; do
+    EMULATOR_PID=\$(pgrep -f "emulator.*\$AVD_NAME" | head -n 1)
     if [ -n "\$EMULATOR_PID" ]; then
-      :
+      break
     fi
+    sleep 1
+  done
+  
+  if [ -z "\$EMULATOR_PID" ]; then
+    echo "Warning: Could not find emulator PID, but it should be running"
+    echo "Check /tmp/emulator.log for details"
+  else
+    echo "Emulator started with PID: \$EMULATOR_PID (running independently)"
+    echo "Emulator will continue running even if this script receives SIGTERM"
+  fi
+  
+  # Handle signals gracefully - don't kill emulator on SIGTERM/SIGINT
+  # The emulator is already disowned, so it will survive script termination
+  cleanup() {
+    # Don't kill the emulator - it should continue running independently
+    # Just exit the script gracefully
+    exit 0
   }
-  trap cleanup EXIT
+  trap cleanup SIGTERM SIGINT
   
   TIMEOUT=300
   ELAPSED=0
   BOOTED=false
   
   while [ \$ELAPSED -lt \$TIMEOUT ]; do
+    # Check if emulator process is still running (but don't fail if it's not our direct child)
     if ! kill -0 \$EMULATOR_PID 2>/dev/null; then
-       cat /tmp/emulator.log
-       exit 1
+       # Emulator might have exited, check if it's actually running via adb
+       if ! adb devices | grep -E "emulator-[0-9]+" | grep -q "device$"; then
+         cat /tmp/emulator.log
+         exit 1
+       fi
     fi
 
     if adb devices | grep -E "emulator-[0-9]+" | grep -q "device$"; then
@@ -1485,10 +1720,29 @@ else
   if [ "\$BOOTED" = "true" ]; then
     sleep 5
   else
-    cat /tmp/emulator.log
-    exit 1
+    # Check one more time if emulator is actually running
+    if adb devices | grep -E "emulator-[0-9]+" | grep -q "device$"; then
+      # Emulator is running, just took longer to boot
+      BOOTED=true
+    else
+      cat /tmp/emulator.log
+      exit 1
+    fi
   fi
+  
+  # Clear the trap since emulator is booted and independent
+  trap - SIGTERM SIGINT
 fi
+
+# Set up a signal handler for graceful exit during app installation/logcat
+# The emulator will continue running even if script is terminated
+graceful_exit() {
+  echo ""
+  echo "Script terminated. Emulator continues running in background."
+  echo "To stop the emulator later, use: adb emu kill"
+  exit 0
+}
+trap graceful_exit SIGTERM SIGINT
 
 # Uninstall existing app if present
 adb uninstall com.aspauldingcode.wawona || true
@@ -1511,9 +1765,11 @@ echo "=== Recent crash logs ==="
 adb logcat -d -v time | grep -i -E "(wawona|androidruntime|fatal|exception|error.*3995)" | tail -200
 
 # Stream logs to stdout - show Wawona logs, AndroidRuntime errors, and system crashes
+# This will run until interrupted (SIGTERM/SIGINT), at which point the emulator continues running
 echo ""
 echo "=== Starting live logcat stream ==="
 echo "Showing: Wawona, WawonaJNI, WawonaNative, AndroidRuntime errors"
+echo "Press Ctrl+C to stop logcat (emulator will continue running)"
 adb logcat -v time -s Wawona:D WawonaJNI:D WawonaNative:D AndroidRuntime:E
 
 EOF

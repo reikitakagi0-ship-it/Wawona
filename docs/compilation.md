@@ -78,6 +78,14 @@ nix build .#waypipe-ios -L
 nix build .#ffmpeg-android
 ```
 
+**Run Waypipe on macOS:**
+You can run waypipe directly on macOS using `nix run`:
+```bash
+nix run .#waypipe-macos -- --help
+nix run .#waypipe-macos -- --version
+nix run .#waypipe-macos -- ssh user@host command
+```
+
 **Check the build result:**
 By default, `nix build` creates a `result` symlink in the current directory containing the build output (e.g., `result/bin/waypipe`).
 
