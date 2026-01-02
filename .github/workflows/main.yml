@@ -1,8 +1,8 @@
-name: Build iOS xcarchive (Nix)
+name: Build iOS xcarchive (Nix, refresh mesa)
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
   pull_request:
 
 jobs:
@@ -16,6 +16,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Xcode を明示的に選択（wrapper 対策）
       - name: Select Xcode
         run: |
           sudo xcode-select -s "$XCODE_APP"
@@ -29,18 +30,28 @@ jobs:
           mkdir -p ~/.config/nix
           echo "experimental-features = nix-command flakes" >> ~/.config/nix/nix.conf
 
+      # FlakeHub は使わない（ノイズ防止）
       - name: Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@v6
+        with:
+          flakehub: false
 
-      - name: Build waypipe-ios (xcarchive)
+      # ★ 対応1：mesa の fixed-output hash mismatch 回避
+      # --refresh により mesa の取得物を再評価
+      - name: Refresh mesa fixed-output hash
+        run: |
+          nix build .#mesa --refresh -L || true
+
+      # iOS ビルド本体
+      - name: Build waypipe-ios
         run: |
           nix build .#waypipe-ios -L
 
-      # xcarchive を分かりやすい場所に集める
+      # xcarchive を収集
       - name: Collect xcarchive
         run: |
           mkdir -p artifacts
-          find result -name "*.xcarchive" -maxdepth 5 -print -exec cp -R {} artifacts/ \;
+          find result -name "*.xcarchive" -maxdepth 6 -print -exec cp -R {} artifacts/ \;
 
       - name: Upload xcarchive
         uses: actions/upload-artifact@v4
