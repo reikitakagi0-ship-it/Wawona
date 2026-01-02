@@ -13,8 +13,8 @@ let
     source = "gitlab";
     owner = "mesa";
     repo = "mesa";
-    branch = "main";
-    sha256 = "sha256-Kw5xL5RllnCBWvQiGK5pAb5KedJZy/Tt6rVYVbkobh8=";
+    rev = "8134e1aad0af9efb5727bba165637466743a064f";
+    sha256 = "sha256-6GfENUXqvmAxwKbC/Zmu74ckAYNF0xwtVcqCJ6jz5Ak=";
   };
   src = fetchSource mesaSource;
   buildFlags = [
