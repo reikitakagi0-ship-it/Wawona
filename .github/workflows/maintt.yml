@@ -3,7 +3,6 @@ name: Build iOS xcarchive (Nix, refresh mesa)
 on:
   push:
     branches: [ master ]
-  pull_request:
 
 jobs:
   build-ios:
