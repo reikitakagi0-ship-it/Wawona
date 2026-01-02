@@ -2,7 +2,7 @@ name: Build iOS xcarchive (Nix, refresh mesa)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
   pull_request:
 
 jobs:
