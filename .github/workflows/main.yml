@@ -1,4 +1,4 @@
-name: Build iOS xcarchive (Nix, refresh mesa)
+name: Build iOS (Waypipe / Nix)
 
 on:
   push:
@@ -8,75 +8,61 @@ on:
 jobs:
   build-ios:
     runs-on: macos-26
+
     env:
-      XCODE_APP: /Applications/Xcode.app  # Xcode を選択する場合
+      XCODE_APP: /Applications/Xcode.app  # Xcode のパスを指定
 
     steps:
-      # 1. リポジトリのチェックアウト
-      - name: Checkout repository
+      # 1. Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Xcode をセットアップ
+      # 2. Setup Xcode
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: '26.0'
 
-      - name: Select Xcode
+      - name: Verify Xcode
         run: |
           sudo xcode-select -s "$XCODE_APP"
           xcodebuild -version
 
-      # 3. Nix をインストール
+      # 3. Install Nix
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v9
 
+      # 4. Enable Nix flakes & nix-command
       - name: Enable Nix flakes
         run: |
           mkdir -p ~/.config/nix
           echo "experimental-features = nix-command flakes" >> ~/.config/nix/nix.conf
 
+      # 5. Configure Nix cache (optional)
       - name: Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@v6
         with:
           flakehub: false
 
-      # 4. Mesa fixed-output hash mismatch 回避
+      # 6. Refresh mesa hash to avoid fixed-output mismatch
       - name: Refresh mesa fixed-output hash
         run: |
           nix build .#mesa --refresh -L || true
 
-      # 5. iOS ビルド本体（Waypipe）
-      - name: Build waypipe-ios
+      # 7. Build Waypipe iOS
+      - name: Build Waypipe iOS
         run: |
           nix build .#waypipe-ios -L
 
-      # 6. Xcode プロジェクト自動検出
-      - name: Detect Xcode project
-        id: detect_proj
-        run: |
-          PROJ=$(find . -name "*.xcodeproj" | head -n 1)
-          if [ -z "$PROJ" ]; then
-            echo "No .xcodeproj found!"
-            exit 1
-          fi
-          echo "Found Xcode project: $PROJ"
-          echo "project_path=$PROJ" >> $GITHUB_OUTPUT
-
-      # 7. xcarchive のビルド
-      - name: Build xcarchive
+      # 8. Collect build artifacts
+      - name: Collect build artifacts
         run: |
           mkdir -p artifacts
-          xcodebuild -project "${{ steps.detect_proj.outputs.project_path }}" \
-                     -scheme Waypipe \
-                     -configuration Release \
-                     -destination 'generic/platform=iOS' \
-                     -archivePath $PWD/artifacts/Waypipe.xcarchive \
-                     clean archive
+          cp -R result/* artifacts/
 
-      # 8. xcarchive をアップロード
-      - name: Upload xcarchive
+      # 9. Upload artifacts to GitHub
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: waypipe-ios-xcarchive
-          path: artifacts/*.xcarchive
+          name: waypipe-ios
+          path: artifacts/
