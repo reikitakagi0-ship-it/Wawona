@@ -1,0 +1,49 @@
+name: Build iOS xcarchive (Nix)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build-ios:
+    runs-on: macos-14   # Apple Silicon
+
+    env:
+      XCODE_APP: /Applications/Xcode.app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "$XCODE_APP"
+          xcodebuild -version
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v9
+
+      - name: Enable Nix flakes
+        run: |
+          mkdir -p ~/.config/nix
+          echo "experimental-features = nix-command flakes" >> ~/.config/nix/nix.conf
+
+      - name: Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v6
+
+      - name: Build waypipe-ios (xcarchive)
+        run: |
+          nix build .#waypipe-ios -L
+
+      # xcarchive を分かりやすい場所に集める
+      - name: Collect xcarchive
+        run: |
+          mkdir -p artifacts
+          find result -name "*.xcarchive" -maxdepth 5 -print -exec cp -R {} artifacts/ \;
+
+      - name: Upload xcarchive
+        uses: actions/upload-artifact@v4
+        with:
+          name: waypipe-ios-xcarchive
+          path: artifacts/*.xcarchive
