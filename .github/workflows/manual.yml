@@ -1,10 +1,11 @@
-name: Manual Wawona iOS Build via Nix (Xcode26)
+name: Manual Build Wawona iOS Dependencies via Nix
 
+# 手動トリガー workflow_dispatch に変更
 on:
-  workflow_dispatch:   # 手動実行
+  workflow_dispatch:
 
 jobs:
-  build-ios:
+  build-ios-deps:
     runs-on: macos-26
     env:
       NIX_REMOTE: "https://cache.nixos.org"
@@ -20,44 +21,27 @@ jobs:
         with:
           xcode-version: '26.0'
 
-      # 3. Nix のインストール（残骸があっても続行）
-      - name: Install Nix
-        run: |
-          echo "Installing Nix..."
-          curl -L -o install-nix https://nixos.org/nix/install
-          # 既存のNix設定やユーザーがあっても --daemon で続行
-          sh install-nix --daemon || echo "Ignoring existing Nix installation"
+      # 3. Nix のプロファイル読み込み（既存 Nix がある前提）
+      - name: Load Nix environment
+        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
 
-      # 4. 環境読み込み
-      - name: Load Nix profile
-        run: |
-          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-          nix --version
-
-      # 5. iOS 依存関係ビルド
+      # 4. iOS 依存関係を個別にビルド（--no-substitute で binary cache にアップロードしない）
       - name: Build iOS dependencies
         run: |
-          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-          nix --experimental-features 'nix-command flakes' build .#waypipe-ios
-          nix --experimental-features 'nix-command flakes' build .#ffmpeg-ios
-          nix --experimental-features 'nix-command flakes' build .#libwayland-ios
-          nix --experimental-features 'nix-command flakes' build .#kosmickrisp-ios
-          nix --experimental-features 'nix-command flakes' build .#lz4-ios
-          nix --experimental-features 'nix-command flakes' build .#zstd-ios
-          nix --experimental-features 'nix-command flakes' build .#expat-ios
-          nix --experimental-features 'nix-command flakes' build .#libffi-ios
-          nix --experimental-features 'nix-command flakes' build .#libxml2-ios
-          nix --experimental-features 'nix-command flakes' build .#epoll-shim-ios
-          nix --experimental-features 'nix-command flakes' build .#mbedtls-ios
-          nix --experimental-features 'nix-command flakes' build .#libssh2-ios
+          nix --experimental-features 'nix-command flakes' build .#waypipe-ios --no-substitute
+          nix --experimental-features 'nix-command flakes' build .#ffmpeg-ios --no-substitute
+          nix --experimental-features 'nix-command flakes' build .#libwayland-ios --no-substitute
+          nix --experimental-features 'nix-command flakes' build .#kosmickrisp-ios --no-substitute
+          nix --experimental-features 'nix-command flakes' build .#lz4-ios --no-substitute
+          nix --experimental-features 'nix-command flakes' build .#zstd-ios --no-substitute
+          nix --experimental-features 'nix-command flakes' build .#expat-ios --no-substitute
+          nix --experimental-features 'nix-command flakes' build .#libffi-ios --no-substitute
+          nix --experimental-features 'nix-command flakes' build .#libxml2-ios --no-substitute
+          nix --experimental-features 'nix-command flakes' build .#epoll-shim-ios --no-substitute
+          nix --experimental-features 'nix-command flakes' build .#mbedtls-ios --no-substitute
+          nix --experimental-features 'nix-command flakes' build .#libssh2-ios --no-substitute
 
-      # 6. Wawona iOS 本体ビルド
-      - name: Build Wawona iOS
-        run: |
-          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-          nix --experimental-features 'nix-command flakes' build .#wawona-ios --show-trace
-
-      # 7. 成果物アップロード
+      # 5. 成果物を GitHub Actions artifact としてアップロード
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
