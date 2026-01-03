@@ -21,11 +21,14 @@ jobs:
         with:
           xcode-version: '26.0'
 
-      # 3. Nix のインストール
+      # 3. Nix のインストール（daemon をオフにして _nixbld* 問題を回避）
       - name: Install Nix
         uses: cachix/install-nix-action@v22
         with:
           nix_path: nixpkgs=channel:nixos-unstable
+          daemon: false
+          allow-downgrade: true
+          no-channel-add: true
 
       # 4. iOS 本体 + 依存関係ビルド
       - name: Build Wawona iOS (full)
@@ -33,21 +36,14 @@ jobs:
           nix --experimental-features 'nix-command flakes' build \
             .#wawona-ios --show-trace
 
-      # 5. 個別 iOS 依存も同時にアップロード（オプション）
+      # 5. 個別 iOS 依存も同時にビルド（オプション）
       - name: Build iOS dependencies individually
         run: |
-          nix --experimental-features 'nix-command flakes' build .#waypipe-ios
-          nix --experimental-features 'nix-command flakes' build .#ffmpeg-ios
-          nix --experimental-features 'nix-command flakes' build .#libwayland-ios
-          nix --experimental-features 'nix-command flakes' build .#kosmickrisp-ios
-          nix --experimental-features 'nix-command flakes' build .#lz4-ios
-          nix --experimental-features 'nix-command flakes' build .#zstd-ios
-          nix --experimental-features 'nix-command flakes' build .#expat-ios
-          nix --experimental-features 'nix-command flakes' build .#libffi-ios
-          nix --experimental-features 'nix-command flakes' build .#libxml2-ios
-          nix --experimental-features 'nix-command flakes' build .#epoll-shim-ios
-          nix --experimental-features 'nix-command flakes' build .#mbedtls-ios
-          nix --experimental-features 'nix-command flakes' build .#libssh2-ios
+          for dep in waypipe-ios ffmpeg-ios libwayland-ios kosmickrisp-ios \
+                     lz4-ios zstd-ios expat-ios libffi-ios libxml2-ios \
+                     epoll-shim-ios mbedtls-ios libssh2-ios; do
+            nix --experimental-features 'nix-command flakes' build .#${dep}
+          done
 
       # 6. 成果物アップロード
       - name: Upload build artifacts
