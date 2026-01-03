@@ -1,0 +1,114 @@
+name: Build Wawona iOS (Full, Manual, No Upload)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build-ios:
+    runs-on: macos-26
+    env:
+      NIX_REMOTE: ""
+
+    steps:
+      # 1. リポジトリをチェックアウト
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Xcode 26 のセットアップ
+      - name: Set up Xcode 26
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.0'
+
+      # 3. Nix のインストール（クリーンな状態から）
+      - name: Install Nix
+        run: |
+          curl -L -o install-nix https://nixos.org/nix/install
+          sh ./install-nix --daemon
+
+      # 4. Nix 環境ロード
+      - name: Load Nix daemon profile
+        run: |
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+
+      # 5. iOS 依存関係ビルド
+      - name: Build iOS dependencies
+        run: |
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+
+          nix --experimental-features 'nix-command flakes' build \
+            --accept-flake-config \
+            -L --cores 0 --max-jobs auto \
+            .#waypipe-ios
+
+          nix --experimental-features 'nix-command flakes' build \
+            --accept-flake-config \
+            -L --cores 0 --max-jobs auto \
+            .#ffmpeg-ios
+
+          nix --experimental-features 'nix-command flakes' build \
+            --accept-flake-config \
+            -L --cores 0 --max-jobs auto \
+            .#libwayland-ios
+
+          nix --experimental-features 'nix-command flakes' build \
+            --accept-flake-config \
+            -L --cores 0 --max-jobs auto \
+            .#kosmickrisp-ios
+
+          nix --experimental-features 'nix-command flakes' build \
+            --accept-flake-config \
+            -L --cores 0 --max-jobs auto \
+            .#lz4-ios
+
+          nix --experimental-features 'nix-command flakes' build \
+            --accept-flake-config \
+            -L --cores 0 --max-jobs auto \
+            .#zstd-ios
+
+          nix --experimental-features 'nix-command flakes' build \
+            --accept-flake-config \
+            -L --cores 0 --max-jobs auto \
+            .#expat-ios
+
+          nix --experimental-features 'nix-command flakes' build \
+            --accept-flake-config \
+            -L --cores 0 --max-jobs auto \
+            .#libffi-ios
+
+          nix --experimental-features 'nix-command flakes' build \
+            --accept-flake-config \
+            -L --cores 0 --max-jobs auto \
+            .#libxml2-ios
+
+          nix --experimental-features 'nix-command flakes' build \
+            --accept-flake-config \
+            -L --cores 0 --max-jobs auto \
+            .#epoll-shim-ios
+
+          nix --experimental-features 'nix-command flakes' build \
+            --accept-flake-config \
+            -L --cores 0 --max-jobs auto \
+            .#mbedtls-ios
+
+          nix --experimental-features 'nix-command flakes' build \
+            --accept-flake-config \
+            -L --cores 0 --max-jobs auto \
+            .#libssh2-ios
+
+      # 6. Wawona iOS 本体ビルド
+      - name: Build Wawona iOS
+        run: |
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+          nix --experimental-features 'nix-command flakes' build \
+            --accept-flake-config \
+            -L --cores 0 --max-jobs auto \
+            .#wawona-ios
+
+      # 7. 成果物アップロード
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wawona-iOS-full-build
+          path: |
+            result
