@@ -1,14 +1,13 @@
-name: Manual Build Wawona iOS Dependencies via Nix
+name: Build Wawona iOS (Full, Manual, No Upload)
 
-# 手動トリガー workflow_dispatch に変更
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 jobs:
-  build-ios-deps:
+  build-ios:
     runs-on: macos-26
     env:
-      NIX_REMOTE: "https://cache.nixos.org"
+      NIX_REMOTE: ""
 
     steps:
       # 1. リポジトリをチェックアウト
@@ -21,30 +20,96 @@ jobs:
         with:
           xcode-version: '26.0'
 
-      # 3. Nix のプロファイル読み込み（既存 Nix がある前提）
-      - name: Load Nix environment
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+      # 3. Nix のインストール（クリーンな状態から）
+      - name: Install Nix
+        run: |
+          curl -L -o install-nix https://nixos.org/nix/install
+          sh ./install-nix --daemon
 
-      # 4. iOS 依存関係を個別にビルド（--no-substitute で binary cache にアップロードしない）
+      # 4. Nix 環境ロード
+      - name: Load Nix daemon profile
+        run: |
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+
+      # 5. iOS 依存関係ビルド
       - name: Build iOS dependencies
         run: |
-          nix --experimental-features 'nix-command flakes' build .#waypipe-ios --no-substitute
-          nix --experimental-features 'nix-command flakes' build .#ffmpeg-ios --no-substitute
-          nix --experimental-features 'nix-command flakes' build .#libwayland-ios --no-substitute
-          nix --experimental-features 'nix-command flakes' build .#kosmickrisp-ios --no-substitute
-          nix --experimental-features 'nix-command flakes' build .#lz4-ios --no-substitute
-          nix --experimental-features 'nix-command flakes' build .#zstd-ios --no-substitute
-          nix --experimental-features 'nix-command flakes' build .#expat-ios --no-substitute
-          nix --experimental-features 'nix-command flakes' build .#libffi-ios --no-substitute
-          nix --experimental-features 'nix-command flakes' build .#libxml2-ios --no-substitute
-          nix --experimental-features 'nix-command flakes' build .#epoll-shim-ios --no-substitute
-          nix --experimental-features 'nix-command flakes' build .#mbedtls-ios --no-substitute
-          nix --experimental-features 'nix-command flakes' build .#libssh2-ios --no-substitute
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+          nix --experimental-features 'nix-command flakes' build \
+            --option substituters "" \
+            --option trusted-public-keys "" \
+            --option build-users-group "" \
+            .#waypipe-ios
+          nix --experimental-features 'nix-command flakes' build \
+            --option substituters "" \
+            --option trusted-public-keys "" \
+            --option build-users-group "" \
+            .#ffmpeg-ios
+          nix --experimental-features 'nix-command flakes' build \
+            --option substituters "" \
+            --option trusted-public-keys "" \
+            --option build-users-group "" \
+            .#libwayland-ios
+          nix --experimental-features 'nix-command flakes' build \
+            --option substituters "" \
+            --option trusted-public-keys "" \
+            --option build-users-group "" \
+            .#kosmickrisp-ios
+          nix --experimental-features 'nix-command flakes' build \
+            --option substituters "" \
+            --option trusted-public-keys "" \
+            --option build-users-group "" \
+            .#lz4-ios
+          nix --experimental-features 'nix-command flakes' build \
+            --option substituters "" \
+            --option trusted-public-keys "" \
+            --option build-users-group "" \
+            .#zstd-ios
+          nix --experimental-features 'nix-command flakes' build \
+            --option substituters "" \
+            --option trusted-public-keys "" \
+            --option build-users-group "" \
+            .#expat-ios
+          nix --experimental-features 'nix-command flakes' build \
+            --option substituters "" \
+            --option trusted-public-keys "" \
+            --option build-users-group "" \
+            .#libffi-ios
+          nix --experimental-features 'nix-command flakes' build \
+            --option substituters "" \
+            --option trusted-public-keys "" \
+            --option build-users-group "" \
+            .#libxml2-ios
+          nix --experimental-features 'nix-command flakes' build \
+            --option substituters "" \
+            --option trusted-public-keys "" \
+            --option build-users-group "" \
+            .#epoll-shim-ios
+          nix --experimental-features 'nix-command flakes' build \
+            --option substituters "" \
+            --option trusted-public-keys "" \
+            --option build-users-group "" \
+            .#mbedtls-ios
+          nix --experimental-features 'nix-command flakes' build \
+            --option substituters "" \
+            --option trusted-public-keys "" \
+            --option build-users-group "" \
+            .#libssh2-ios
 
-      # 5. 成果物を GitHub Actions artifact としてアップロード
+      # 6. Wawona iOS 本体ビルド
+      - name: Build Wawona iOS
+        run: |
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+          nix --experimental-features 'nix-command flakes' build \
+            --option substituters "" \
+            --option trusted-public-keys "" \
+            --option build-users-group "" \
+            .#wawona-ios
+
+      # 7. 成果物アップロード
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Wawona-iOS-build
+          name: Wawona-iOS-full-build
           path: |
             result
