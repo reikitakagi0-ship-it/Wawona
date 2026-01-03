@@ -1,5 +1,15 @@
 {
   description = "Wawona";
+
+  nixConfig = {
+    substituters = [
+      "https://cache.nixos.org"
+    ];
+    trusted-public-keys = [
+      "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs";
     rust-overlay.url = "github:oxalica/rust-overlay";
