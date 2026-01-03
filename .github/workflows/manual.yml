@@ -1,8 +1,7 @@
-name: Manual Wawona iOS Build via Nix
+name: Manual Wawona iOS Build via Nix (Xcode26)
 
-# 手動実行トリガーに変更
 on:
-  workflow_dispatch:
+  workflow_dispatch:   # 手動実行
 
 jobs:
   build-ios:
@@ -21,22 +20,24 @@ jobs:
         with:
           xcode-version: '26.0'
 
-      # 3. Nix プロファイル有効化（既存 Nix を使用）
-      - name: Source Nix profile
+      # 3. Nix のインストール（残骸があっても続行）
+      - name: Install Nix
         run: |
-          if [ -e $HOME/.nix-profile/etc/profile.d/nix.sh ]; then
-            . $HOME/.nix-profile/etc/profile.d/nix.sh
-          fi
+          echo "Installing Nix..."
+          curl -L -o install-nix https://nixos.org/nix/install
+          # 既存のNix設定やユーザーがあっても --daemon で続行
+          sh install-nix --daemon || echo "Ignoring existing Nix installation"
 
-      # 4. クリーンビルド用に中間ファイル削除
-      - name: Clean previous build results
+      # 4. 環境読み込み
+      - name: Load Nix profile
         run: |
-          rm -rf result
-          rm -rf .gcroots
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+          nix --version
 
       # 5. iOS 依存関係ビルド
       - name: Build iOS dependencies
         run: |
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
           nix --experimental-features 'nix-command flakes' build .#waypipe-ios
           nix --experimental-features 'nix-command flakes' build .#ffmpeg-ios
           nix --experimental-features 'nix-command flakes' build .#libwayland-ios
@@ -51,8 +52,9 @@ jobs:
           nix --experimental-features 'nix-command flakes' build .#libssh2-ios
 
       # 6. Wawona iOS 本体ビルド
-      - name: Build Wawona iOS (main)
+      - name: Build Wawona iOS
         run: |
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
           nix --experimental-features 'nix-command flakes' build .#wawona-ios --show-trace
 
       # 7. 成果物アップロード
