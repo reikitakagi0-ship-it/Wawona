@@ -1,4 +1,4 @@
-name: Build iOS xcarchive (Nix, Refresh Mesa)
+name: make Build All iOS xcarchive (Waypipe, Dependencies, Nix)
 
 on:
   push:
@@ -43,10 +43,18 @@ jobs:
         run: |
           nix build .#mesa --refresh -L || true
 
-      # 6. iOS ビルド本体
-      - name: Build waypipe-ios
+      # 6. すべての依存関係をビルドする
+      - name: Build all dependencies for iOS
         run: |
-          nix build .#waypipe-ios -L
+          # 依存関係をすべてビルドする（順番にビルド）
+          nix build .#ffmpeg-ios -L
+          nix build .#libwayland-ios -L
+          nix build .#lz4-ios -L
+          nix build .#zstd-ios -L
+          nix build .#libffi-ios -L
+          nix build .#libxml2-ios -L
+          nix build .#epoll-shim-ios -L
+          nix build .#kosmickrisp-ios -L  # Vulkan ベースの Wayland compositor
 
       # 7. Xcode プロジェクトの自動検出
       - name: Find Xcode project
@@ -64,10 +72,10 @@ jobs:
         run: |
           # .xcodeproj が見つかった場合、そのプロジェクトを使って xcarchive をビルド
           xcodebuild -project "$PROJECT_PATH" \
-                     -scheme YourScheme \
+                     -scheme Waypipe \
                      -configuration Release \
                      -destination 'generic/platform=iOS' \
-                     -archivePath $PWD/artifacts/YourApp.xcarchive \
+                     -archivePath $PWD/artifacts/Waypipe.xcarchive \
                      clean archive
 
       # 9. xcarchive を収集
