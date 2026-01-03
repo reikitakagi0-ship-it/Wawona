@@ -1,0 +1,64 @@
+name: Manual Wawona iOS Build via Nix
+
+# 手動実行トリガーに変更
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-26
+    env:
+      NIX_REMOTE: "https://cache.nixos.org"
+
+    steps:
+      # 1. リポジトリをチェックアウト
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Xcode 26 のセットアップ
+      - name: Set up Xcode 26
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.0'
+
+      # 3. Nix プロファイル有効化（既存 Nix を使用）
+      - name: Source Nix profile
+        run: |
+          if [ -e $HOME/.nix-profile/etc/profile.d/nix.sh ]; then
+            . $HOME/.nix-profile/etc/profile.d/nix.sh
+          fi
+
+      # 4. クリーンビルド用に中間ファイル削除
+      - name: Clean previous build results
+        run: |
+          rm -rf result
+          rm -rf .gcroots
+
+      # 5. iOS 依存関係ビルド
+      - name: Build iOS dependencies
+        run: |
+          nix --experimental-features 'nix-command flakes' build .#waypipe-ios
+          nix --experimental-features 'nix-command flakes' build .#ffmpeg-ios
+          nix --experimental-features 'nix-command flakes' build .#libwayland-ios
+          nix --experimental-features 'nix-command flakes' build .#kosmickrisp-ios
+          nix --experimental-features 'nix-command flakes' build .#lz4-ios
+          nix --experimental-features 'nix-command flakes' build .#zstd-ios
+          nix --experimental-features 'nix-command flakes' build .#expat-ios
+          nix --experimental-features 'nix-command flakes' build .#libffi-ios
+          nix --experimental-features 'nix-command flakes' build .#libxml2-ios
+          nix --experimental-features 'nix-command flakes' build .#epoll-shim-ios
+          nix --experimental-features 'nix-command flakes' build .#mbedtls-ios
+          nix --experimental-features 'nix-command flakes' build .#libssh2-ios
+
+      # 6. Wawona iOS 本体ビルド
+      - name: Build Wawona iOS (main)
+        run: |
+          nix --experimental-features 'nix-command flakes' build .#wawona-ios --show-trace
+
+      # 7. 成果物アップロード
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wawona-iOS-build
+          path: |
+            result
