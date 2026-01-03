@@ -1,23 +1,20 @@
-name: make Build All iOS xcarchive (Waypipe, Dependencies, Nix)
+name: Build all iOS targets with Nix
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
   pull_request:
 
 jobs:
   build-ios:
-    runs-on: macos-26  # Apple Silicon または macOS での実行
-
+    runs-on: macos-26
     env:
-      XCODE_APP: /Applications/Xcode.app  # Xcode のパス
+      XCODE_APP: /Applications/Xcode.app
 
     steps:
-      # 1. リポジトリをクローン
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Xcode を選択（バージョン指定）
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
@@ -28,65 +25,40 @@ jobs:
           sudo xcode-select -s "$XCODE_APP"
           xcodebuild -version
 
-      # 3. Nix のインストール
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v9
 
-      # 4. Nix Flakes を有効化
       - name: Enable Nix flakes
         run: |
           mkdir -p ~/.config/nix
           echo "experimental-features = nix-command flakes" >> ~/.config/nix/nix.conf
 
-      # 5. mesa の fixed-output hash mismatch 回避
-      - name: Refresh mesa fixed-output hash
-        run: |
-          nix build .#mesa --refresh -L || true
+      - name: Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v6
+        with:
+          flakehub: false
 
-      # 6. すべての依存関係をビルドする
-      - name: Build all dependencies for iOS
+      # Build all iOS targets (dependencies + wawona-ios)
+      - name: Build all iOS targets
         run: |
-          # 依存関係をすべてビルドする（順番にビルド）
-          nix build .#ffmpeg-ios -L
           nix build .#libwayland-ios -L
           nix build .#lz4-ios -L
           nix build .#zstd-ios -L
+          nix build .#expat-ios -L
           nix build .#libffi-ios -L
           nix build .#libxml2-ios -L
           nix build .#epoll-shim-ios -L
-          nix build .#kosmickrisp-ios -L  # Vulkan ベースの Wayland compositor
+          nix build .#kosmickrisp-ios -L
+          nix build .#waypipe-ios -L
+          nix build .#wawona-ios -L
 
-      # 7. Xcode プロジェクトの自動検出
-      - name: Find Xcode project
-        run: |
-          PROJ=$(find . -name "*.xcodeproj" | head -n 1)
-          if [ -z "$PROJ" ]; then
-            echo "No .xcodeproj found!"
-            exit 1
-          fi
-          echo "Found Xcode project: $PROJ"
-          echo "project_path=$PROJ" >> $GITHUB_OUTPUT
-
-      # 8. xcarchive を生成
-      - name: Build iOS xcarchive
-        run: |
-          # .xcodeproj が見つかった場合、そのプロジェクトを使って xcarchive をビルド
-          xcodebuild -project "$PROJECT_PATH" \
-                     -scheme Waypipe \
-                     -configuration Release \
-                     -destination 'generic/platform=iOS' \
-                     -archivePath $PWD/artifacts/Waypipe.xcarchive \
-                     clean archive
-
-      # 9. xcarchive を収集
-      - name: Collect xcarchive
+      # Upload all build results as artifacts
+      - name: Upload build results
         run: |
           mkdir -p artifacts
-          find $PWD/artifacts -name "*.xcarchive" -exec cp -R {} artifacts/
-
-      # 10. xcarchive をアップロード
-      - name: Upload xcarchive
+          # Nix はそれぞれ result ディレクトリに出力するのでコピー
+          cp -R result artifacts/
         uses: actions/upload-artifact@v4
         with:
-          name: waypipe-ios-xcarchive
-          path: artifacts/*.xcarchive
+          name: ios-build-results
+          path: artifacts/
