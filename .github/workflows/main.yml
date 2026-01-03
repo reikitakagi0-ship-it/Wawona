@@ -2,7 +2,7 @@ name: Build all iOS targets sequentially
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
   pull_request:
 
 jobs:
