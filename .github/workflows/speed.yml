@@ -1,0 +1,84 @@
+name: Build Wawona iOS (Ultra Fast, Full, Downloadable)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build-ios:
+    runs-on: macos-26
+
+    env:
+      # Nix 並列・CPU 全解放
+      NIX_REMOTE: ""
+      NIX_BUILD_CORES: "0"
+
+      # コンパイル・リンク高速化（ABI / 動作不変）
+      NIX_CFLAGS_COMPILE: "-O2 -g0"
+      NIX_CXXFLAGS_COMPILE: "-O2 -g0"
+      NIX_LDFLAGS: "-Wl,-O1"
+
+      # macOS I/O 最適化
+      TMPDIR: /tmp
+
+    steps:
+      # 1. Checkout
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Xcode 26
+      - name: Set up Xcode 26
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.0'
+
+      # 3. Install Nix (daemon)
+      - name: Install Nix
+        run: |
+          curl -L -o install-nix https://nixos.org/nix/install
+          sh ./install-nix --daemon
+
+      # 4. Configure Nix for max performance
+      - name: Configure Nix
+        run: |
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+          sudo mkdir -p /etc/nix
+          echo "cores = 0" | sudo tee -a /etc/nix/nix.conf
+          echo "max-jobs = auto" | sudo tee -a /etc/nix/nix.conf
+          echo "experimental-features = nix-command flakes" | sudo tee -a /etc/nix/nix.conf
+
+      # 5. Build EVERYTHING in ONE nix build（最重要）
+      - name: Build Wawona iOS (single evaluation, all targets)
+        run: |
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+
+          nix build \
+            --accept-flake-config \
+            -L \
+            --cores 0 \
+            --max-jobs auto \
+            .#waypipe-ios \
+            .#ffmpeg-ios \
+            .#libwayland-ios \
+            .#kosmickrisp-ios \
+            .#lz4-ios \
+            .#zstd-ios \
+            .#expat-ios \
+            .#libffi-ios \
+            .#libxml2-ios \
+            .#epoll-shim-ios \
+            .#mbedtls-ios \
+            .#libssh2-ios \
+            .#wawona-ios
+
+      # 6. Prepare artifacts (symlink を実体化)
+      - name: Prepare build artifacts
+        run: |
+          mkdir -p artifacts
+          cp -R "$(readlink result)" artifacts/wawona-ios
+
+      # 7. Upload artifacts
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wawona-iOS-build
+          path: artifacts
