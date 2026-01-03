@@ -1,4 +1,4 @@
-name: Build all iOS targets with Nix
+name: Build all iOS targets sequentially
 
 on:
   push:
@@ -38,8 +38,8 @@ jobs:
         with:
           flakehub: false
 
-      # Build all iOS targets (dependencies + wawona-ios)
-      - name: Build all iOS targets
+      # Build dependencies in order
+      - name: Build dependencies sequentially
         run: |
           nix build .#libwayland-ios -L
           nix build .#lz4-ios -L
@@ -49,16 +49,14 @@ jobs:
           nix build .#libxml2-ios -L
           nix build .#epoll-shim-ios -L
           nix build .#kosmickrisp-ios -L
-          nix build .#waypipe-ios -L
-          nix build .#wawona-ios -L
 
-      # Upload all build results as artifacts
-      - name: Upload build results
+      # Build main targets
+      - name: Build main iOS targets
         run: |
-          mkdir -p artifacts
-          # Nix はそれぞれ result ディレクトリに出力するのでコピー
-          cp -R result artifacts/
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-build-results
-          path: artifacts/
+          nix build .#wawona-ios -L
+          nix build .#waypipe-ios -L
+
+      # Optional: show resulting binaries
+      - name: List results
+        run: |
+          ls -l result/bin
