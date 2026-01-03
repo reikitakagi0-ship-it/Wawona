@@ -3,6 +3,7 @@ name: Build Wawona iOS via Nix (Xcode26)
 on:
   push:
     branches: [ main, master ]
+  pull_request:
 
 jobs:
   build-ios:
@@ -21,7 +22,7 @@ jobs:
         with:
           xcode-version: '26.0'
 
-      # 3. Nix のインストール（daemon をオフにして _nixbld* 問題を回避）
+      # 3. Nix のインストール (daemonなしでユーザ作成回避)
       - name: Install Nix
         uses: cachix/install-nix-action@v22
         with:
@@ -39,11 +40,18 @@ jobs:
       # 5. 個別 iOS 依存も同時にビルド（オプション）
       - name: Build iOS dependencies individually
         run: |
-          for dep in waypipe-ios ffmpeg-ios libwayland-ios kosmickrisp-ios \
-                     lz4-ios zstd-ios expat-ios libffi-ios libxml2-ios \
-                     epoll-shim-ios mbedtls-ios libssh2-ios; do
-            nix --experimental-features 'nix-command flakes' build .#${dep}
-          done
+          nix --experimental-features 'nix-command flakes' build .#waypipe-ios
+          nix --experimental-features 'nix-command flakes' build .#ffmpeg-ios
+          nix --experimental-features 'nix-command flakes' build .#libwayland-ios
+          nix --experimental-features 'nix-command flakes' build .#kosmickrisp-ios
+          nix --experimental-features 'nix-command flakes' build .#lz4-ios
+          nix --experimental-features 'nix-command flakes' build .#zstd-ios
+          nix --experimental-features 'nix-command flakes' build .#expat-ios
+          nix --experimental-features 'nix-command flakes' build .#libffi-ios
+          nix --experimental-features 'nix-command flakes' build .#libxml2-ios
+          nix --experimental-features 'nix-command flakes' build .#epoll-shim-ios
+          nix --experimental-features 'nix-command flakes' build .#mbedtls-ios
+          nix --experimental-features 'nix-command flakes' build .#libssh2-ios
 
       # 6. 成果物アップロード
       - name: Upload build artifacts
